@@ -70,11 +70,12 @@ def pattern_scores(df: pd.DataFrame, pred_col: str = "pred",
         m = np.isfinite(y) & np.isfinite(p)
         if m.sum() >= min_cells:
             r_by_date.append(pearson(y[m], p[m]))
-    if not r_by_date:
-        return {"n_dates": 0, "mean_r": float("nan")}
+    valid = np.asarray(r_by_date, dtype=float)
+    valid = valid[np.isfinite(valid)]
     return {
         "n_dates": len(r_by_date),
-        "mean_r": float(np.nanmean(r_by_date)),
+        "n_valid_dates": int(len(valid)),
+        "mean_r": float(valid.mean()) if len(valid) else float("nan"),
     }
 
 
