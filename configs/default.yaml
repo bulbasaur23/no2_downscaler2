@@ -1,0 +1,90 @@
+# =====================================================================
+# Default configuration for the NO2 mapping platform.
+#
+# Every value here maps to a locked decision from the v3 plan (section 3)
+# or a Stage-0 measured fact. Values marked "Stage 0" are initial guesses
+# to be overwritten by probe reports - they are sensitivities, not truths.
+# =====================================================================
+
+grid:
+  cell_deg: 0.05          # D8 - LOCKED. No 1 km grid (TROPOMI native ~5.5x3.5 km).
+  crs: "EPSG:4326"
+
+observed_cell_rule:       # D2 - 0.05deg cell is observed if this fraction of its
+  main: 0.50              # area is covered by valid pixels. Sensitivity-checked
+  sensitivity: [0.30, 0.70]  # at 30% and 70%; keep the most conservative if unstable.
+  qa_cloud_fraction_max: 0.3   # Stage 0: verify against TROPOMI qa bands.
+  qa_cirrus_max: 0.25          # Stage 0.
+  subpixel_spread_flag: 0.5    # Stage 0: threshold for "cell mixes orbits" note.
+
+study_areas:              # D8 - Delhi = NCR bounding box (not NCT alone).
+  delhi_ncr:              # APPROXIMATE bbox; Stage 0 reports actual cell count.
+    lon_min: 76.38
+    lat_min: 27.60
+    lon_max: 78.62
+    lat_max: 29.32
+  bengaluru:
+    lon_min: 77.30
+    lat_min: 12.80
+    lon_max: 77.90
+    lat_max: 13.35
+  kolkata:
+    lon_min: 87.90
+    lat_min: 22.35
+    lon_max: 88.50
+    lat_max: 22.95
+  hyderabad:              # Case-study city: data pulled only at Phase 5, never tuned on.
+    lon_min: 78.15
+    lat_min: 17.25
+    lon_max: 78.70
+    lat_max: 17.70
+
+sources:                  # Section 4 of the plan. OFFL, never NRTI (risk 4).
+  no2: "COPERNICUS/S5P/OFFL/L3_NO2"
+  cloud: "COPERNICUS/S5P/OFFL/L3_CLOUD"
+  elevation: "USGS/SRTMGL1_003"
+  water: "JRC/GSW1_4/GlobalSurfaceWater"              # mask only (land/mixed/water), D6
+  landcover: "EEA/WorldCover/2021"                    # alternative water fraction source
+  stations_cpcb: null    # optional; correlation and bias only (D1), drop if manual access
+
+weather:                  # D4 - one weather source, one date limit.
+  era5_land_hourly: "ECMWF/ERA5_LAND/HOURLY"
+  era5_single_levels_hourly: "ECMWF/ERA5/HOURLY"      # BLH source (ERA5-Land has no BLH - confirm)
+  overpass_local_hour: 13.5               # S5P ascending pass ~13:30 local solar time (Stage 0 verify)
+  overpass_utc_hour_fallback: 8.0         # rough for UTC+5:30 India; verify from image timestamps
+  lag_hours: [24, 48]                     # mean wind before overpass (D8)
+  ventilation_proxy: "wind_speed * blh"   # wind x BLH
+  variables:                              # kept from the local hour and lagged ones per D8
+    wind_u_100m: "u_100m"
+    wind_v_100m: "v_100m"
+    wind_u_10m: "u10"
+    wind_v_10m: "v10"
+    temperature: "temperature_2m"
+    dewpoint: "dewpoint_temperature_2m"   # humidity derived from temp + dewpoint
+    pressure: "surface_pressure"
+    precipitation: "total_precipitation_sum"
+    boundary_layer_height: "boundary_layer_height"    # ERA5 single levels only
+
+training:
+  window_start: "2022-07-01"   # D3 - consistent-version period; confirm from version plot
+  window_end: null             # Stage 0: cap at earliest weather (ERA5-Land) date (D4)
+  test_from: null              # fixed chronological test period - set after version plot
+  test_to: null
+  version_shift_test:          # newest period after the Nov-2025 processor update
+    name: "post-update-shift"
+    start: null                # Stage 0: first month under the new processor version
+  no_data_before: "2021-06-01" # do not train on pre-2021 data (known low bias)
+
+water_cutoffs:                 # land/mixed/water thresholds (guesses; sensitivity check)
+  land_max_water_fraction: 0.20
+  water_min_water_fraction: 0.80
+
+quota:                         # D5
+  project_id: null             # fill in after GEE registration (one project only - D5)
+  tier: null                   # likely "noncommercial" - fill after registration
+  daily_requests_limit: null   # set after the measured per-request cost
+  budget_unit: "requests"
+
+demo:                          # D7
+  mode: "local"                # hosted only if measured quota cost allows
+  cached_regions: ["delhi", "hyderabad"]

@@ -1,0 +1,33 @@
+# Environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Data artifacts (never commit data)
+data/
+exports/
+mlruns/
+cache/
+*.parquet
+*.pq
+*.geotiff
+*.tif
+
+# Credentials / secrets
+.env
+.gee-credentials*
+*.json.key
+service-account*.json
+
+# Reports are version-controlled as code, but raw JSON outputs go to data/
+!docs/**/*.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

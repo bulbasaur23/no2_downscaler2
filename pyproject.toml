@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "no2map"
+version = "0.1.0"
+description = "AI-based NO2 mapping platform: TROPOMI-retrieved tropospheric NO2 column on a 0.05-degree grid for Indian cities, with draw-any-polygon live access and honest validation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Core keeps Stage 0 dependency-light; GEE/test deps are extras.
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+gee = [
+    "earthengine-api>=1.0",
+    "numpy>=2.0",
+    "pandas>=2.3",
+    "pyarrow>=21.0",
+    "matplotlib>=3.10",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
