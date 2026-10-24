@@ -59,7 +59,10 @@ def export_month(city: str, month: str, cfg: dict, manifest: ExportManifest,
     t0 = time.perf_counter()
     for date_str in month_days(month):
         sums = day_no2_cell_sums(area, date_str, cells_fc, no2_scale)
-        no2_rows.extend(convert_day_rows(sums, main_threshold))
+        day_rows = convert_day_rows(sums, main_threshold)
+        for r in day_rows:
+            r["date"] = date_str  # NO2 rows carry the same (cell_id, date) key as weather
+        no2_rows.extend(day_rows)
         weather_rows.extend(day_weather_stack(date_str, weather_scale, cells_fc))
     elapsed = round(time.perf_counter() - t0, 1)
 
