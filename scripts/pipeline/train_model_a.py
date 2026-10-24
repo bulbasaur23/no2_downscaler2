@@ -23,8 +23,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from no2map.dataset import load_training_panel          # noqa: E402
-from no2map.model import PRED_COLS, run_blocked_evaluation  # noqa: E402
+from no2map.artifact import save_model_artifact        # noqa: E402
+from no2map.conformal import SplitConformal            # noqa: E402
+from no2map.dataset import load_training_panel         # noqa: E402
+from no2map.features import (TARGET, build_features,  # noqa: E402
+                             clean_training_frame, feature_block)
+from no2map.model import (PRED_COLS, XGBConfig, season_key,          # noqa: E402
+                          run_blocked_evaluation)
 from no2map.variogram import gate_g2_block_verdict, ncr_width_m  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +90,21 @@ def main() -> int:
     run_dir = ROOT / "data" / "runs" / (
         f"{args.city}_modelA_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}Z")
     run_dir.mkdir(parents=True)
+
+    # serving bundle (G4: predict without retraining): refit on ALL window
+    # rows; conformal reuses the blocked OOF residuals (same quantiles the
+    # report shows - oof carries 'residual' and 'month')
+    final_rows = build_features(clean_training_frame(panel))
+    fe_cols = feature_block(final_rows, groups)
+    final_model = XGBConfig().make(args.seed)
+    final_model.fit(final_rows[fe_cols], final_rows[TARGET])
+    conf = SplitConformal(alpha=args.alpha, key_fn=season_key).fit(oof)
+    save_model_artifact(
+        run_dir, final_model, conf, fe_cols, groups,
+        meta={"city": args.city, "months": panel.attrs["months"],
+              "block_m": args.block_m, "buffer_m": args.buffer_m,
+              "protocol": advice, "ran_at": report["config"]["ran_at"]})
+    print(f"[train] artifact saved (model + conformal + {len(fe_cols)} fe cols)")
     oof.to_parquet(run_dir / "oof.parquet", index=False)
     (run_dir / "metrics.json").write_text(
         json.dumps(report, indent=2, default=float), encoding="utf-8")
@@ -93,9 +113,9 @@ def main() -> int:
     print("\n[train] blocked-CV RMSE (lower is better; cells held out by block):")
     for c, r in sorted(rows, key=lambda t: t[1]):
         print(f"  {c:<18s} {r:8.3f}")
-    conf = report["conformal"]
-    print(f"[train] conformal alpha={conf['alpha']}: "
-          f"q_pooled={conf['q_pooled']:.3f}, q_by_season={conf['q_by_season']}")
+    conf_rep = report["conformal"]
+    print(f"[train] conformal alpha={conf_rep['alpha']}: "
+          f"q_pooled={conf_rep['q_pooled']:.3f}, q_by_season={conf_rep['q_by_season']}")
     print(f"[train] saved: {run_dir}")
     return 0
 
