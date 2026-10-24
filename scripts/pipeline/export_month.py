@@ -145,6 +145,7 @@ def main() -> None:
     else:
         cells_fc = cells_featurecollection(cfg["study_areas"][args.city])
         statics_by_city = {args.city: pd.DataFrame(static_features_per_cell(cells_fc, cfg))}
+        static_cache_file.parent.mkdir(parents=True, exist_ok=True)
         statics_by_city[args.city].to_parquet(static_cache_file, index=False)
         print(f"[info] statics computed for {len(statics_by_city[args.city])} cells")
 
