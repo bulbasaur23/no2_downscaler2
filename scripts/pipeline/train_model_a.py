@@ -1,0 +1,104 @@
+"""Train Model A (XGBoost) and compare with baselines (Phase 3, Gate G3).
+
+Usage:
+  python scripts/pipeline/train_model_a.py --city delhi_ncr \
+      [--block-m 30000] [--buffer-m 0] [--groups static,weather_inst,...]
+
+Flow: dataset module assembles the config-window training panel (manifest-
+driven); run_blocked_evaluation scores Model A + Ridge + climatology +
+daily-city-mean through identical spatial-block folds (variogram-backed
+block size from --block-m, with the plan's buffer gap); the OOF frame plus
+the conformal calibration are written for reporting. The version-shift test
+is separate and must never be used to tune.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+from no2map.dataset import load_training_panel          # noqa: E402
+from no2map.model import PRED_COLS, run_blocked_evaluation  # noqa: E402
+from no2map.variogram import gate_g2_block_verdict, ncr_width_m  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--city", required=True)
+    ap.add_argument("--groups", default="static,weather_inst,weather_lags,temporal",
+                    help="comma-separated feature groups (see features.py)")
+    ap.add_argument("--block-m", type=float, default=30_000.0,
+                    help="spatial block side in metres (variogram-advised)")
+    ap.add_argument("--buffer-m", type=float, default=5_000.0,
+                    help="buffer gap around validation blocks (metres)")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--alpha", type=float, default=0.1,
+                    help="1 - interval coverage target")
+    ap.add_argument("--max-rows", type=int, default=None,
+                    help="optional cap on training rows (debug runs)")
+    args = ap.parse_args()
+    groups = [g.strip() for g in args.groups.split(",") if g.strip()]
+
+    panel = load_training_panel(
+        ROOT / "configs" / "default.yaml",
+        ROOT / "data" / "exports" / "manifest.json",
+        ROOT / "data" / "exports",
+        args.city,
+    )
+    if args.max_rows:
+        panel = panel.sample(min(args.max_rows, len(panel)), random_state=args.seed)
+    print(f"[train] panel: {len(panel):,} rows | "
+          f"{panel['cell_id'].nunique()} cells | "
+          f"months: {panel.attrs['months'][0]}..{panel.attrs['months'][-1]} "
+          f"({len(panel.attrs['months'])} months)")
+
+    # conservative: the narrower NCR extent (lat, ~191 km) gates feasibility
+    g2 = gate_g2_block_verdict(args.block_m, min(ncr_width_m()))
+    advice = ("SPATIAL BLOCKED" if g2["blocking_feasible"] else
+              "G2 fallback: block too large for NCR - chronological + coarse "
+              "blocks; spatial claim via leave-one-city-out")
+    print(f"[train] block {args.block_m:.0f} m, buffer {args.buffer_m:.0f} m -> {advice}")
+
+    oof, report = run_blocked_evaluation(
+        panel, groups, block_m=args.block_m, buffer_m=args.buffer_m,
+        seed=args.seed, alpha=args.alpha)
+    report["config"] = {
+        "city": args.city, "groups": groups,
+        "block_m": args.block_m, "buffer_m": args.buffer_m,
+        "seed": args.seed, "alpha": args.alpha,
+        "months": panel.attrs["months"],
+        "blocking_protocol": advice,
+        "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    # advisory_block_size (variogram range) needs a fitted semivariogram on
+    # real data; the CLI takes the size directly via --block-m instead.
+    report["g2_verdict"] = g2
+
+    run_dir = ROOT / "data" / "runs" / (
+        f"{args.city}_modelA_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}Z")
+    run_dir.mkdir(parents=True)
+    oof.to_parquet(run_dir / "oof.parquet", index=False)
+    (run_dir / "metrics.json").write_text(
+        json.dumps(report, indent=2, default=float), encoding="utf-8")
+
+    rows = [(c, report[c]["rmse"]) for c in PRED_COLS if c in report]
+    print("\n[train] blocked-CV RMSE (lower is better; cells held out by block):")
+    for c, r in sorted(rows, key=lambda t: t[1]):
+        print(f"  {c:<18s} {r:8.3f}")
+    conf = report["conformal"]
+    print(f"[train] conformal alpha={conf['alpha']}: "
+          f"q_pooled={conf['q_pooled']:.3f}, q_by_season={conf['q_by_season']}")
+    print(f"[train] saved: {run_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
