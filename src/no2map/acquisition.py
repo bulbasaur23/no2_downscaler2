@@ -98,7 +98,7 @@ def cell_stats_from_sums(value_sum: float, value_sq_sum: float, valid_sum: float
 def overpass_hour_filter(hours: list[int]) -> ee.Filter:
     """ee.Filter matching the given UTC calendar hours."""
     parts = [ee.Filter.calendarRange(h, h, "hour") for h in hours]
-    return parts[0] if len(parts) == 1 else ee.Filter.or_(*parts)
+    return parts[0] if len(parts) == 1 else ee.Filter.Or(*parts)
 
 
 def cells_featurecollection(city_cfg: dict) -> ee.FeatureCollection:

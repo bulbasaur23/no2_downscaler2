@@ -150,6 +150,7 @@ def main() -> None:
         print(f"[info] statics computed for {len(statics_by_city[args.city])} cells")
 
     for i, month in enumerate(months_list, start=1):
+        manifest.ensure_pending(args.city, [month])  # so failures are recordable
         print(f"[{args.city}] month {i}/{len(months_list)}: {month} ...", flush=True)
         try:
             name, stats = export_month(
