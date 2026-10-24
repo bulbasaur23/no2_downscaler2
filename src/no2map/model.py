@@ -50,6 +50,52 @@ def design_matrix(df: pd.DataFrame, groups: list[str]) -> pd.DataFrame:
     return prepared.loc[:, feature_block(prepared, groups)]
 
 
+def run_ablation(
+    df: pd.DataFrame,
+    ladder: list[list[str]] | None = None,
+    block_m: float = 30_000.0,
+    buffer_m: float = 0.0,
+    seed: int = 0,
+    alpha: float = 0.1,
+    xgb: XGBConfig | None = None,
+) -> list[dict]:
+    """Cumulative feature-group ablation on IDENTICAL folds.
+
+    Default ladder isolates the four signal families the plan names: static
+    topography/water -> +instant weather -> +ventilation lags -> +seasonal
+    harmonics. Each stage re-runs the full blocked evaluation (same folds,
+    same baselines through the same path), so the delta between stages is
+    attributable to the ADDED family, not to a different evaluation.
+    """
+    xgb = xgb or XGBConfig()
+    if ladder is None:
+        ladder = [
+            ["static"],
+            ["static", "weather_inst"],
+            ["static", "weather_inst", "weather_lags"],
+            ["static", "weather_inst", "weather_lags", "temporal"],
+        ]
+    stages: list[dict] = []
+    for groups in ladder:
+        oof, report = run_blocked_evaluation(
+            df, groups, block_m=block_m, buffer_m=buffer_m, seed=seed,
+            alpha=alpha, xgb=xgb)
+        stage = {
+            "groups": groups,
+            "model_rmse": report["pred_model_a"]["rmse"],
+            "ridge_rmse": report["pred_ridge"]["rmse"],
+            "climatology_rmse": report["pred_climatology"]["rmse"],
+            "city_mean_rmse": report["pred_city_mean"]["rmse"],
+            "level_rmse": report["pred_model_a"].get("level_rmse"),
+            "level_r": report["pred_model_a"].get("level_r"),
+            "a": report["conformal"]["alpha"],
+        }
+        if stages:
+            stage["delta_model_m"] = report["pred_model_a"]["rmse"] - stages[-1]["model_rmse"]
+        stages.append(stage)
+    return stages
+
+
 @dataclass
 class XGBConfig:
     n_estimators: int = 300
