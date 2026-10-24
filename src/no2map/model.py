@@ -26,6 +26,7 @@ from xgboost import XGBRegressor
 
 from no2map.baselines import Climatology, DailyCityMean, RidgeBaseline
 from no2map.conformal import SplitConformal
+from no2map.evaluation import full_scores
 from no2map.features import (
     FEATURE_GROUPS,
     TARGET,
@@ -33,7 +34,7 @@ from no2map.features import (
     clean_training_frame,
     feature_block,
 )
-from no2map.splits import spatial_block_folds
+from no2map.splits import chronological_split, spatial_block_folds
 
 PRED_COLS = ["pred_model_a", "pred_ridge", "pred_climatology", "pred_city_mean"]
 
@@ -157,23 +158,10 @@ def run_blocked_evaluation(
         if train_rows.empty or val_rows.empty:
             continue
 
-        X_tr, y_tr = train_rows[fe_cols], train_rows[TARGET]
-
-        model = xgb.make(seed)
-        model.fit(X_tr, y_tr)
-
-        clim = Climatology().fit(train_rows)
-        dcm = DailyCityMean().fit(train_rows)
-
-        preds = pd.DataFrame({
-            "pred_model_a": model.predict(val_rows[fe_cols]),
-            "pred_climatology": clim.predict(val_rows).to_numpy(),
-            "pred_city_mean": dcm.predict(val_rows).to_numpy(),
-        }, index=val_rows.index)
-        try:
-            ridge = RidgeBaseline().fit(train_rows, fe_cols, lam=1.0)
-            preds["pred_ridge"] = ridge.predict(val_rows).to_numpy()
-        except ValueError:
+        methods = _fit_all_fold_methods(train_rows, fe_cols, seed, xgb)
+        preds = pd.DataFrame({name: fn(val_rows) for name, fn in methods.items()
+                              if fn is not None}, index=val_rows.index)
+        if "pred_ridge" not in preds:
             preds["pred_ridge"] = preds["pred_climatology"]  # degenerate fold
 
         preds[TARGET] = val_rows[TARGET].to_numpy()
@@ -193,10 +181,10 @@ def run_blocked_evaluation(
     conf = SplitConformal(alpha=alpha, key_fn=season_key).fit(oof)
     oof["conf_margin"] = conf.margin(oof)
 
-    report = {"folds": list(rows_by_block), "n_folds": len(rows_by_block)}
+    report = {"protocol": "spatial_blocked", "alpha": alpha,
+              "folds": list(rows_by_block), "n_folds": len(rows_by_block)}
     for col in PRED_COLS:
-        s = {"rmse": float(np.sqrt(np.mean((oof[TARGET] - oof[col]) ** 2)))}
-        report[col] = s
+        report[col] = full_scores(oof, col)
     report["conformal"] = {
         "alpha": alpha,
         "q_by_season": {k: conf.q_by_stratum[k]
@@ -204,3 +192,91 @@ def run_blocked_evaluation(
         "q_pooled": conf.q_by_stratum[None],
     }
     return oof, report
+
+
+def _fit_all_fold_methods(train_rows, fe_cols, seed, xgb):
+    """Fit model + all baselines on one training frame (shared by both
+    protocols so the always-shown rule is structural, not enforced by care)."""
+    model = xgb.make(seed)
+    model.fit(train_rows[fe_cols], train_rows[TARGET])
+    clim = Climatology().fit(train_rows)
+    dcm = DailyCityMean().fit(train_rows)
+    preds = {
+        "pred_model_a": lambda v: model.predict(v[fe_cols]),
+        "pred_climatology": lambda v: clim.predict(v).to_numpy(),
+        "pred_city_mean": lambda v: dcm.predict(v).to_numpy(),
+    }
+    try:
+        ridge = RidgeBaseline().fit(train_rows, fe_cols, lam=1.0)
+        preds["pred_ridge"] = lambda v: ridge.predict(v).to_numpy()
+    except ValueError:
+        preds["pred_ridge"] = None  # degenerate: climatology fallback
+    return preds
+
+
+def run_chronological_evaluation(
+    df: pd.DataFrame,
+    groups: list[str],
+    train_frac: float = 0.75,
+    seed: int = 0,
+    alpha: float = 0.1,
+    xgb: XGBConfig | None = None,
+    block_m: float = 30_000.0,
+    buffer_m: float = 0.0,
+) -> tuple[pd.DataFrame, dict]:
+    """Train-early / test-late evaluation (the plan's G2-fallback protocol
+    and the temporal twin of the spatial protocol).
+
+    All methods fit on the earliest `train_frac` of dates; the later dates
+    are predicted frozen. Intervals are calibrated on a spatial-blocked OOF
+    run INSIDE the training period only, then applied to the future - so the
+    future set is truly untouched by anything downstream of fitting.
+    Raises on <2 distinct dates (nothing to split).
+    """
+    xgb = xgb or XGBConfig()
+    if groups[-1] not in FEATURE_GROUPS:
+        raise KeyError(f"unknown feature group {groups[-1]!r}")
+
+    prepared = build_features(clean_training_frame(df))
+    fe_cols = feature_block(prepared, groups)
+    uniq = list(prepared["date"].unique())
+    train_dates, test_dates = chronological_split(uniq, train_frac)
+    tr = prepared[prepared["date"].isin(set(train_dates))]
+    te = prepared[prepared["date"].isin(set(test_dates))]
+    if te.empty or tr.empty:
+        raise ValueError("chronological split produced an empty side")
+
+    methods = _fit_all_fold_methods(tr, fe_cols, seed, xgb)
+    preds = pd.DataFrame({name: fn(te)
+                          for name, fn in methods.items() if fn is not None},
+                         index=te.index)
+    if "pred_ridge" not in preds:
+        preds["pred_ridge"] = preds["pred_climatology"]
+    preds[TARGET] = te[TARGET].to_numpy()
+    preds["cell_id"] = te["cell_id"].to_numpy()
+    preds["date"] = te["date"].to_numpy()
+    preds["month"] = te["month"].to_numpy()
+
+    # conformal: spatial-blocked OOF within the training period only
+    oof_tr, _ = run_blocked_evaluation(
+        tr, groups, block_m=block_m, buffer_m=buffer_m, seed=seed,
+        alpha=alpha, xgb=xgb)
+    oof_tr["residual"] = oof_tr[TARGET] - oof_tr["pred_model_a"]
+    conf = SplitConformal(alpha=alpha, key_fn=season_key).fit(oof_tr)
+    preds["conf_margin"] = conf.margin(preds)
+
+    report = {
+        "protocol": "chronological",
+        "alpha": alpha,
+        "train_dates": [min(train_dates), max(train_dates)],
+        "test_dates": [min(test_dates), max(test_dates)],
+        "n_train_dates": len(train_dates),
+        "n_test_dates": len(test_dates),
+    }
+    for col in PRED_COLS:
+        s = full_scores(preds, col)
+        s["coverage"] = float(
+            (np.abs(preds[TARGET] - preds[col]) <= preds["conf_margin"]).mean())
+        s["mean_width"] = float(preds["conf_margin"].mean())
+        report[col] = s
+    return preds, report
