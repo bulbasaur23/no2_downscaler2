@@ -72,13 +72,21 @@ weather:                  # D4 - one weather source, one date limit.
     # (D4) favors ERA5/HOURLY for everything IF the parity test passes in Phase 1.
 
 training:
-  window_start: "2022-07-01"   # D3 - consistent-version period; confirm from version plot
-  window_end: null             # Stage 0: cap at earliest weather (ERA5-Land) date (D4)
-  test_from: null              # fixed chronological test period - set after version plot
+  # MEASURED (g0_version_drift.json): processor transitions at 2022-07 (2.4.0),
+  # 2023-03 (2.5.0), 2023-11 (2.6.0), 2024-09 (2.7.1), 2024-11 (2.8.0) and
+  # 2025-11 (02.09.01 - the plan's Nov-2025 update). A single-version window from
+  # mid-2022 does NOT exist; the final choice is made at Gate G3. The default
+  # below is the measured-feasible window: 2023-04..2025-09 minus transition
+  # months (which mix two processor versions), spanning eras 2.5.0..2.8.0 and
+  # both winters. Eras are stored per month in the manifest (D3).
+  window_start: "2023-04-01"
+  window_end: "2025-09-30"
+  exclude_months: ["2024-09", "2024-11"]   # transition months: two processor versions mixed
+  test_from: null              # fixed chronological test period - set at Gate G3
   test_to: null
   version_shift_test:          # newest period after the Nov-2025 processor update
     name: "post-update-shift"
-    start: null                # Stage 0: first month under the new processor version
+    start: "2025-11-01"        # first full month under 02.09.01
   no_data_before: "2021-06-01" # do not train on pre-2021 data (known low bias)
 
 water_cutoffs:                 # land/mixed/water thresholds (guesses; sensitivity check)
