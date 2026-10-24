@@ -18,7 +18,7 @@ import math
 import numpy as np
 import pandas as pd
 
-FEATURE_SCHEMA_VERSION = "feat-v1-2026-10-24"
+FEATURE_SCHEMA_VERSION = "fm-v1-2026-10-24"  # bump on any feature-schema change (parity pin)
 
 TARGET = "value_umol_m2"
 

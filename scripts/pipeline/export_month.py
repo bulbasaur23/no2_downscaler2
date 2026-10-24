@@ -39,8 +39,7 @@ from no2map.acquisition import (
 from no2map.weather import day_weather_stack
 from no2map.statics import static_features_per_cell
 from no2map.manifest import ExportManifest
-
-FEATURE_SCHEMA_VERSION = "fm-v1-2026-10-24"  # bump on any feature-schema change (parity pin)
+from no2map.features import FEATURE_SCHEMA_VERSION  # single parity-pin source
 
 EXPORTS_DIR = ROOT / "data" / "exports"
 

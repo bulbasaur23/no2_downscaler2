@@ -162,7 +162,7 @@ class TestContract:
             build_features(df)
 
     def test_schema_version_is_pinned(self):
-        assert FEATURE_SCHEMA_VERSION == "feat-v1-2026-10-24"
+        assert FEATURE_SCHEMA_VERSION == "fm-v1-2026-10-24"
 
 
 class TestFeatureGroups:
