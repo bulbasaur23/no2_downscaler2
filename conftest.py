@@ -28,7 +28,17 @@ def pytest_configure(config):
         BASE.mkdir(exist_ok=True)
     except OSError:
         return  # keep default behaviour rather than failing the session
+    # Sweep only STALE directories (older than a day) and only directories:
+    # deleting every other child would rmtree the live basetemp of a pytest
+    # process that is running right now in another session (CodeRabbit
+    # review finding on this file). Age-based is dependency-free; growth is
+    # still bounded because each run sweeps its own leftovers next day.
+    import time
+    cutoff = time.time() - 24 * 3600
     for child in BASE.iterdir():
-        if child.resolve() != mine.resolve():
-            shutil.rmtree(child, ignore_errors=True)
+        try:
+            if child.is_dir() and child.name != mine.name and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
     config.option.basetemp = str(mine)

@@ -25,7 +25,10 @@ produce byte-identical values for the same inputs (parity test, plan §8).
 - `wind_u_10m`, `wind_v_10m` — at matched overpass hour (UTC-hour-from-longitude match).
 - `wind_u_100m`, `wind_v_100m` — 100 m winds (better dispersion proxy).
 - `temperature_2m`, `dewpoint_temperature_2m` (→ RH derived), `surface_pressure`,
-  `total_precipitation_sum`, `boundary_layer_height`.
+  `precip_l24_m` / `precip_l48_m` (24/48 h SUMS of the DE-ACCUMULATED hourly
+  band `total_precipitation_hourly`; the raw `total_precipitation` band
+  accumulates from midnight and resets daily, so summing it across midnight
+  over-counts), `boundary_layer_height`.
 - Lagged (weather only - not NO₂, so live requests see the same feature set):
   `wind_u/v_10m_lag24h`, `wind_u/v_10m_lag48h`, `wind_mean_24h`, `wind_mean_48h`,
   `blh_overpass`, `ventilation = wind_speed × blh`, `precip_lag24h`.

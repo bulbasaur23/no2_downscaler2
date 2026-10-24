@@ -128,7 +128,9 @@ def main() -> None:
             m for m in ExportManifest.months_between(plan["window_start"][:7], plan["window_end"][:7])
             if m not in set(plan.get("exclude_months", []))
         ]
-        months_list = [m for m in months_list if not manifest.is_done(args.city, m)]
+        # months_todo excludes `skipped` (two-strike exhausted) months - a
+        # plain is_done filter would retry them forever (CodeRabbit finding)
+        months_list = manifest.months_todo(args.city, months_list)
         if not months_list:
             print(f"[{args.city}] manifest says nothing pending - nothing to do.")
             return

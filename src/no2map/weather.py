@@ -14,7 +14,9 @@ Measured Stage-0 facts encoded here (docs/feasibility.md):
 Window definitions (all UTC):
  - inst   : overpass window [day 07:00, day 10:00) - means, not instants, to
             damp alignment noise, per D4's 'matched to the overpass hour',
- - lag24  : [day-1 08:00, day 08:00) mean wind (D8), precipitation SUM,
+ - lag24  : [day-1 08:00, day 08:00) mean wind (D8), precipitation SUM of the
+            de-accumulated hourly band (total_precipitation_hourly; the raw
+            band resets at midnight and would over-count across the reset),
  - lag48  : [day-2 08:00, day 08:00) mean wind, precipitation SUM.
 Lags use ONLY weather (never NO2), so live requests see the same inputs.
 
@@ -23,6 +25,13 @@ Weather band naming (verified by Stage-0 probe g0_weather.json):
  dewpoint_temperature_2m, surface_pressure, total_precipitation.
  ERA5/HOURLY single levels: u/v_component_of_wind_10m,
  u/v_component_of_wind_100m, boundary_layer_height.
+
+ Precipitation caveat (verified against the GEE catalog): ERA5-Land's
+ `total_precipitation` ACCUMULATES from the start of the day's forecast and
+ RESETS AT MIDNIGHT, so summing it over a lag window crossing midnight
+ over-counts. The catalog's `total_precipitation_hourly` band is the
+ de-accumulated hourly depth - exactly what lag sums need; LAND_PRECIP_BAND
+ uses it.
 """
 from __future__ import annotations
 
@@ -38,7 +47,10 @@ LAND_INST_BANDS = [
     "dewpoint_temperature_2m",
     "surface_pressure",
 ]
-LAND_PRECIP_BAND = "total_precipitation"  # meters; summed over lag windows
+# The hourly band is de-accumulated by GEE (difference of consecutive forecast
+# steps of the raw, midnight-resetting cumulative band). Safe to SUM across
+# midnight; the raw `total_precipitation` band is NOT.
+LAND_PRECIP_BAND = "total_precipitation_hourly"  # meters per hour
 # HOURLY single-levels bands used for instant + lags:
 SINGLE_WIND_BANDS = [
     "u_component_of_wind_10m",

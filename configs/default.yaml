@@ -65,7 +65,7 @@ weather:                  # D4 - one weather source, one date limit.
     temperature: "temperature_2m"
     dewpoint: "dewpoint_temperature_2m"   # humidity derived from temp + dewpoint
     pressure: "surface_pressure"
-    precipitation: "total_precipitation"
+    precipitation: "total_precipitation_hourly"  # DE-ACCUMULATED hourly; raw `total_precipitation` resets at midnight and must NOT be summed across lag windows
     boundary_layer_height: "boundary_layer_height"    # ERA5 single levels only
     # WRITTEN FACT from g0_weather.json: ERA5-Land has wind 10m, temp, dewpoint,
     # pressure, precipitation - but NO 100m wind and NO BLH. The one-source rule
