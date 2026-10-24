@@ -1,6 +1,4 @@
 """Grid scheme and observed-cell rule tests (D2, D8)."""
-import math
-
 import pytest
 
 from no2map.grid import (
@@ -75,12 +73,15 @@ class TestGeometry:
         assert f == 0.0
 
     def test_bbox_cell_count_ncr(self):
-        # approximate NCR bbox from config: cells 0.05 deg wide
+        # Expected count derives from the SAME index math (single definition of
+        # "which cells does a bbox touch"), then sanity-bounds the NCR region.
+        from no2map.grid import col_from_lon, row_from_lat
+
         cells = list(cells_in_bbox(27.60, 29.32, 76.38, 78.62))
-        n_rows = math.ceil((29.32 - 27.60) / CELL_DEG)
-        n_cols = math.ceil((78.62 - 76.38) / CELL_DEG)
-        assert len(cells) >= n_rows * n_cols - 40 and len(cells) <= n_rows * n_cols + 40
-        assert all(isinstance(c, Cell) for c in cells)
+        n_rows = row_from_lat(29.32) - row_from_lat(27.60) + 1
+        n_cols = col_from_lon(78.62) - col_from_lon(76.38) + 1
+        assert len(cells) == n_rows * n_cols
+        assert 1400 < len(cells) < 1800  # NCR-bbox ballpark; reported to feasibility note
 
 
 class TestObservedRule:

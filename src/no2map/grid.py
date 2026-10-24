@@ -15,22 +15,34 @@ ORIGIN_LON = -180.0  # grid origin so row/col indices are 0-based, stable, and s
 
 _EARTH_RADIUS_M = 6371008.8  # IUGG mean radius used by Earth Engine's sf sphere
 
+# All indexing happens on INTEGER millidegrees. Degree-boundary floats are
+# unavoidably noisy (0.1, 0.05 etc. are not exactly representable in binary),
+# so an epsilon-subtraction hack ends up snapping exact boundaries (e.g.
+# lat = 27.60) into the neighbouring cell. Converting to integer milli-degrees
+# first makes every bucketing step exact and deterministic.
+_DEG_MILLI = 1000
+_GRID_MILLI = round(CELL_DEG * _DEG_MILLI)  # 50
+_ORIGIN_LAT_MILLI = round(ORIGIN_LAT * _DEG_MILLI)
+_ORIGIN_LON_MILLI = round(ORIGIN_LON * _DEG_MILLI)
 
-def _floor(v: float, quantum: float) -> int:
-    # Round to 9 decimals first so exact multiples (e.g. lat = 76.05) do not
-    # fall into the neighbouring cell because of float representation noise.
-    v = round(v, 9)
-    return int((v - 1e-9) // quantum) if abs(v / quantum - round(v / quantum)) < 1e-9 else int(v // quantum)
+
+def _milli(v: float) -> int:
+    """Decimal degrees -> integer milli-degrees (nearest).
+
+    Bucketing convention: a coordinate on a grid boundary belongs to the
+    HIGHER-index cell (the rounding happens before the floor, so this is a
+    deliberate, documented choice, not float noise)."""
+    return round(v * _DEG_MILLI)
 
 
 def row_from_lat(lat: float) -> int:
     """0-based row index counted up from the south pole."""
-    return _floor(lat - ORIGIN_LAT, CELL_DEG)
+    return (_milli(lat) - _ORIGIN_LAT_MILLI) // _GRID_MILLI
 
 
 def col_from_lon(lon: float) -> int:
     """0-based column index counted up from the antimeridian."""
-    return _floor(lon - ORIGIN_LON, CELL_DEG)
+    return (_milli(lon) - _ORIGIN_LON_MILLI) // _GRID_MILLI
 
 
 def cell_id(row: int, col: int) -> str:
@@ -78,24 +90,26 @@ def cell_from_point(lat: float, lon: float) -> Cell:
 
 
 def cell_from_row_col(row: int, col: int) -> Cell:
-    lat_min = ORIGIN_LAT + row * CELL_DEG
-    lon_min = ORIGIN_LON + col * CELL_DEG
+    lat_min = round((_ORIGIN_LAT_MILLI + row * _GRID_MILLI) / _DEG_MILLI, 9)
+    lon_min = round((_ORIGIN_LON_MILLI + col * _GRID_MILLI) / _DEG_MILLI, 9)
     return Cell(
         id=cell_id(row, col),
         row=row,
         col=col,
         lat_min=lat_min,
-        lat_max=lat_min + CELL_DEG,
+        lat_max=round(lat_min + CELL_DEG, 9),
         lon_min=lon_min,
-        lon_max=lon_min + CELL_DEG,
+        lon_max=round(lon_min + CELL_DEG, 9),
     )
 
 
 def cells_in_bbox(lat_min: float, lat_max: float, lon_min: float, lon_max: float):
     """All cells that intersect the bbox (edge cells included - Phase 4 trims
-    them by overlap fraction; here we list, weighting happens at summary time)."""
-    row0, row1 = row_from_lat(lat_min), row_from_lat(max(lat_min, lat_max - 1e-12))
-    col0, col1 = col_from_lon(lon_min), col_from_lon(max(lon_min, lon_max - 1e-12))
+    them by overlap fraction; here we list, weighting happens at summary time).
+    A bbox edge lying exactly on a grid boundary includes the touching cell too
+    (zero-area contact); overlap weighting makes those harmless in summaries)."""
+    row0, row1 = row_from_lat(lat_min), row_from_lat(lat_max)
+    col0, col1 = col_from_lon(lon_min), col_from_lon(lon_max)
     for row in range(row0, row1 + 1):
         for col in range(col0, col1 + 1):
             yield cell_from_row_col(row, col)
