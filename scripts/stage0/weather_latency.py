@@ -27,14 +27,17 @@ ERA5_HOURLY_SINGLE = "ECMWF/ERA5/HOURLY"
 
 
 def _latest_date(collection: str) -> dict:
-    col = ee.ImageCollection(collection).limit(500, "system:time_start")
-    latest = col.sort("system:time_start", False).first()
-    # ECMWF collections on GEE carry far-future sentinel system:time_start
-    # values (overflowing local epoch math on Windows), so format the date
-    # SERVER-side and keep the raw ms as a string for diagnosis only.
+    # ECMWF collections carry far-future sentinel timestamps AND a deep
+    # pre-1970 backfill era: limit-then-sort grabs the wrong tail, so filter
+    # to a recent window first, then take the newest image (server-side date
+    # formatting to avoid overflowing Windows epoch math).
+    window_start = "2026-09-01"
+    col = ee.ImageCollection(collection).filterDate(window_start, "2027-01-01")
+    sorted_desc = col.sort("system:time_start", False)
+    latest = sorted_desc.first()
     iso = latest.date().format("YYYY-MM-dd HH:mm:ss", "UTC").getInfo() if latest else None
     raw_ms = latest.get("system:time_start").getInfo() if latest else None
-    return {"collection": collection, "latest_utc": iso, "raw_time_start_ms": str(raw_ms)}
+    return {"collection": collection, "window_start": window_start, "latest_utc": iso, "raw_time_start_ms": str(raw_ms)}
 
 
 def main() -> None:

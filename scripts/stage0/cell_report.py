@@ -35,15 +35,37 @@ def main() -> None:
     # JRC water occurrence aggregated over the Delhi NCR region (quick look)
     wa = cfg["study_areas"]["delhi_ncr"]
     region = ee.Geometry.Rectangle([wa["lon_min"], wa["lat_min"], wa["lon_max"], wa["lat_max"]])
-    # JRC Global Surface Water is a STATIC single Image (no .mean() there).
+    # WorldCover class 80 = permanent water (ESA, 10 m). JRC GSW occurrence
+    # was verified BROKEN on GEE on 2026-10-24 (mostly-masked sparse raster):
+    # anomaly recorded in the feasibility note; plan lists WorldCover as the
+    # alternative water source (section 4), so water fraction uses class 80.
     water = (
         ee.Image(cfg["sources"]["water"])
-        .select("occurrence")
-        .gt(cfg["water_cutoffs"]["land_max_water_fraction"] * 100)
+        .select("Map")
+        .eq(80)  # 80 = permanent water
     )
     water_frac = water.reduceRegion(
-        ee.Reducer.mean(), region, scale=1113, maxPixels=1e9, bestEffort=True
+        ee.Reducer.mean(), region, scale=1000, maxPixels=1e9, bestEffort=True
     ).getInfo()
+
+    # Sanity check: land points should read a NON-water class; the old JRC
+    # GSW occurrence raster struck 44.7% which is physically impossible -
+    # anomaly recorded in the feasibility note.
+    water_points = (
+        ee.Image(cfg["sources"]["water"])
+        .select("Map")
+        .sampleRegions(
+            collection=ee.FeatureCollection(
+                [
+                    ee.Feature(ee.Geometry.Point([77.29, 28.86]), {"label": "yamuna_river"}),
+                    ee.Feature(ee.Geometry.Point([77.22, 28.61]), {"label": "india_gate_land"}),
+                ]
+            ),
+            properties=["label"],
+            scale=10,
+        )
+        .getInfo()
+    )
 
     save_report(
         "g0_cells_water",
@@ -55,6 +77,7 @@ def main() -> None:
             "delhi_nct_only_cells": nct_cells,
             "why_ncr": "NCT alone has too few cells for spatial blocking (plan risk 8); NCR bbox is the substitute",
             "delhi_ncr_mean_water_fraction_gt_20pct": water_frac,
+            "water_point_sanity_checks_occurrence": water_points,
             "water_cutoffs_as_configured": cfg["water_cutoffs"],
             "note": "cutoffs 20%/80% remain guesses until Phase 2 sensitivity run",
         },

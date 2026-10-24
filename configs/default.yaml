@@ -43,8 +43,11 @@ sources:                  # Section 4 of the plan. OFFL, never NRTI (risk 4).
   no2: "COPERNICUS/S5P/OFFL/L3_NO2"
   cloud: "COPERNICUS/S5P/OFFL/L3_CLOUD"
   elevation: "USGS/SRTMGL1_003"
-  water: "JRC/GSW1_4/GlobalSurfaceWater"              # mask only (land/mixed/water), D6
-  landcover: "EEA/WorldCover/2021"                    # alternative water fraction source
+  water: "ESA/WorldCover/v200/2021"      # band 'Map', class 80 = permanent water, 10 m.
+                                         # (JRC/GSW1_4 occurrence raster verified broken on GEE
+                                         #  2026-10-24: mostly-masked, 46 px per ~34k expected -
+                                         #  see g0_cells_water.json anomaly note; plan allows either)
+  landcover: null                        # water source covers this role now
   stations_cpcb: null    # optional; correlation and bias only (D1), drop if manual access
 
 weather:                  # D4 - one weather source, one date limit.
@@ -54,16 +57,19 @@ weather:                  # D4 - one weather source, one date limit.
   overpass_utc_hour_fallback: 8.0         # rough for UTC+5:30 India; verify from image timestamps
   lag_hours: [24, 48]                     # mean wind before overpass (D8)
   ventilation_proxy: "wind_speed * blh"   # wind x BLH
-  variables:                              # kept from the local hour and lagged ones per D8
-    wind_u_100m: "u_100m"
-    wind_v_100m: "v_100m"
-    wind_u_10m: "u10"
-    wind_v_10m: "v10"
+  variables:                              # REAL GEE band names (verified by g0_weather.json)
+    wind_u_10m: "u_component_of_wind_10m"
+    wind_v_10m: "v_component_of_wind_10m"
+    wind_u_100m: "u_component_of_wind_100m"           # ERA5/HOURLY only - NOT in ERA5-Land
+    wind_v_100m: "v_component_of_wind_100m"
     temperature: "temperature_2m"
     dewpoint: "dewpoint_temperature_2m"   # humidity derived from temp + dewpoint
     pressure: "surface_pressure"
-    precipitation: "total_precipitation_sum"
+    precipitation: "total_precipitation"
     boundary_layer_height: "boundary_layer_height"    # ERA5 single levels only
+    # WRITTEN FACT from g0_weather.json: ERA5-Land has wind 10m, temp, dewpoint,
+    # pressure, precipitation - but NO 100m wind and NO BLH. The one-source rule
+    # (D4) favors ERA5/HOURLY for everything IF the parity test passes in Phase 1.
 
 training:
   window_start: "2022-07-01"   # D3 - consistent-version period; confirm from version plot
