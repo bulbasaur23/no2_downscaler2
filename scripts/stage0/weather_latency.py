@@ -22,7 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common_ee import ee_init, ee, save_report
 
 ERA5_LAND_HOURLY = "ECMWF/ERA5_LAND/HOURLY"
-ERA5_51710 = "ECMWF/ERA5/51710"  # hourly single level collection on GEE
+# Current hourly single-levels collection on GEE (51710 was deprecated; name
+# verified live 2026-10-24: 292 bands incl. boundary_layer_height).
+ERA5_HOURLY_SINGLE = "ECMWF/ERA5/HOURLY"
 
 
 def _latest_date(collection: str) -> dict:
@@ -43,12 +45,12 @@ def main() -> None:
     # Band lists (the confirmation the plan demands for BLH).
     land_bands = ee.ImageCollection(ERA5_LAND_HOURLY).first().bandNames().getInfo()
     try:
-        single_bands = ee.ImageCollection(ERA5_51710).first().bandNames().getInfo()
+        single_bands = ee.ImageCollection(ERA5_HOURLY_SINGLE).first().bandNames().getInfo()
     except Exception as exc:
         single_bands = {"error": repr(exc)}
 
     # Latest dates -> the actual "data as of" cap for the app (risk 2).
-    latest = [_latest_date(ERA5_LAND_HOURLY), _latest_date(ERA5_51710)]
+    latest = [_latest_date(ERA5_LAND_HOURLY), _latest_date(ERA5_HOURLY_SINGLE)]
 
     # Timing: one overpass-hour window, small region, one variable each -
     # this is the "time the live-request path" test the plan requires.
@@ -67,7 +69,7 @@ def main() -> None:
     if blh_missing_from_land:
         timings.append(timed(
             "blh_from_single_levels_point",
-            lambda: ee.ImageCollection(ERA5_51710)
+            lambda: ee.ImageCollection(ERA5_HOURLY_SINGLE)
             .filterDate("2026-09-15", "2026-09-16")
             .filter(ee.Filter.calendarRange(8, 8, "hour"))
             .first()

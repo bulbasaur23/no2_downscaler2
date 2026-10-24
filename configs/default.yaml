@@ -80,8 +80,8 @@ water_cutoffs:                 # land/mixed/water thresholds (guesses; sensitivi
   water_min_water_fraction: 0.80
 
 quota:                         # D5
-  project_id: null             # fill in after GEE registration (one project only - D5)
-  tier: null                   # likely "noncommercial" - fill after registration
+  project_id: alan-no2-downscaler             # fill in after GEE registration (one project only - D5)
+  tier: noncommercial                   # likely "noncommercial" - fill after registration
   daily_requests_limit: null   # set after the measured per-request cost
   budget_unit: "requests"
 
