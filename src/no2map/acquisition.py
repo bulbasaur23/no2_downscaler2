@@ -32,11 +32,18 @@ def overpass_utc_hours(lon_min: float, lon_max: float) -> list[int]:
     """UTC hours whose orbits can cover this longitude range at ~13:30 local solar.
 
     S5P overpasses near local solar 13:30; local solar hour over longitude L at
-    UTC hour h is h + L/15. Inverting: h0 = 13.5 - mean_lon/15. The window is
-    the two hour-buckets bracketing h0 (measurement found Delhi exactly in
-    bucket 8; keeping the adjacent bucket preserves western-edge pixels)."""
+    UTC hour h is h + L/15. Inverting: h0 = 13.5 - mean_lon/15.
+
+    The window is widened to +/- 1 hour bucket beyond the two envelope buckets
+    of h0: orbits are spaced ~101 min, so the day's Delhi-covering orbit drifts
+    its time_start hour by about one bucket day-to-day (measured in Phase 1:
+    a [8,9] window caught only 6 of 31 January days; the rest were no_overpass).
+    Orbits centered far away simply contribute no pixels - and if two orbits DO
+    see a pixel, D2's valid-area weighting merges them - so wider is safe."""
     h0 = 13.5 - (lon_min + lon_max) / 2.0 / 15.0
-    return sorted({int(math.floor(h0)), int(math.ceil(h0))})
+    lo = int(math.floor(h0)) - 1
+    hi = int(math.ceil(h0)) + 1
+    return list(range(lo, hi + 1))
 
 
 def month_days(month: str) -> list[str]:

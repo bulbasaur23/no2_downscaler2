@@ -14,21 +14,22 @@ from no2map.acquisition import (
 
 
 class TestOverpassWindows:
-    def test_delhi_window_is_8_9(self):
-        # measured: exactly UTC hour 8 covers Delhi (13:30 IST overpass)
-        assert overpass_utc_hours(76.38, 78.62) == [8, 9]
+    def test_delhi_window_spans_drift(self):
+        # h0 = 13.5 - 77.5/15 = 8.3667; envelope buckets 8,9 widened by the
+        # +/-1 drift headroom (measured: a [8,9] window caught only 6/31 days)
+        assert overpass_utc_hours(76.38, 78.62) == [7, 8, 9, 10]
 
     def test_bengaluru_window(self):
-        # lon ~77.6: h0 = 13.5 - 77.6/15 = 8.3267 -> buckets 8, 9
-        assert overpass_utc_hours(77.30, 77.90) == [8, 9]
+        # lon ~77.6: h0 = 8.3267 -> buckets 8,9 widened -> 7..10
+        assert overpass_utc_hours(77.30, 77.90) == [7, 8, 9, 10]
 
-    def test_kolkata_window_is_7_8(self):
-        # lon ~88.2: h0 = 13.5 - 88.2/15 = 13.5 - 5.88 = 7.62 -> buckets 7, 8
-        assert overpass_utc_hours(87.90, 88.50) == [7, 8]
+    def test_kolkata_window(self):
+        # lon ~88.2: h0 = 7.62 -> buckets 7,8 widened -> 6..9
+        assert overpass_utc_hours(87.90, 88.50) == [6, 7, 8, 9]
 
     def test_window_matches_solar_noon_algebra(self):
-        # for lon_center = 0, overpass is at UTC 13.5 -> buckets 13, 14
-        assert overpass_utc_hours(-1.0, 1.0) == [13, 14]
+        # lon_center = 0: h0 = 13.5 -> buckets 13,14 widened -> 12..15
+        assert overpass_utc_hours(-1.0, 1.0) == [12, 13, 14, 15]
 
 
 class TestMonthDays:
