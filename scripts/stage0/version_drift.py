@@ -79,3 +79,7 @@ def month_end(m: str) -> str:
     y, mo = map(int, m.split("-"))
     nxt = date(y, mo, 28) + timedelta(days=10)
     return f"{nxt.year}-{nxt.month:02d}-01"
+
+
+if __name__ == "__main__":
+    main()

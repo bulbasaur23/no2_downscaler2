@@ -44,12 +44,11 @@ def main() -> None:
         datetime.fromtimestamp(t / 1000, tz=timezone.utc).isoformat() for t in times
     )
 
-    # valid fraction: fraction of pixels in region that are QA-flagged "fine"
-    # uses tropospheric NO2 column + band qa; thresholds refined against
-    # the actual band values printed below (do NOT hardcode forward).
+    # Valid fraction + units over the FULL month mean (first-3 limit picked
+    # night orbits and produced nulls; month mean over Delhi-aligned time
+    # window is the statistic Phase 1 actually needs).
     qa_probe = (
-        month.limit(3)
-        .select(bands[:3])
+        month.select(bands)
         .mean()
         .reduceRegion(
             reducer=ee.Reducer.minMax().combine(ee.Reducer.mean(), sharedInputs=True),
@@ -57,6 +56,45 @@ def main() -> None:
             scale=11132,  # one native-pixel scale probe only
             maxPixels=1e9,
         )
+        .getInfo()
+    )
+
+    # One day, one point: which ORBITS actually observe Delhi? A point-level
+    # unmasked count per image tells us the overpass-time window we must
+    # select by (because filterBounds does not filter L3 pseudo-global
+    # footprints) - this is the fact that fixes rows 4 and 6 of G0.
+    delhi_point = ee.Geometry.Point([77.21, 28.61])
+    sample_day = month.filterDate("2026-09-15", "2026-09-16")
+    orbit_probe = (
+        sample_day.map(
+            lambda img: img.set(
+                {
+                    "utc_hour": img.date().get("hour"),
+                    "n_valid_pixels_at_delhi": img.select(
+                        "tropospheric_NO2_column_number_density"
+                    ).reduceRegion(
+                        ee.Reducer.count(), delhi_point, scale=1113, maxPixels=1e9
+                    ).get("tropospheric_NO2_column_number_density"),
+                }
+            )
+        )
+        .select(["utc_hour"])
+        .aggregate_histogram("utc_hour")
+        .getInfo()
+    )
+    covering_orbits = (
+        sample_day.map(
+            lambda img: img.set(
+                {
+                    "utc_hour": img.date().get("hour"),
+                    "valid": img.select("tropospheric_NO2_column_number_density")
+                    .reduceRegion(ee.Reducer.count(), delhi_point, scale=1113, maxPixels=1e9)
+                    .get("tropospheric_NO2_column_number_density"),
+                }
+            )
+        )
+        .filter(ee.Filter.gt("valid", 0))
+        .aggregate_array("utc_hour")
         .getInfo()
     )
 
@@ -78,7 +116,13 @@ def main() -> None:
             "sample_properties": props,
             "overpass_times_utc_sample": times_local[:10],
             "qa_probe_minmaxmean_limited": qa_probe,
+            "orbit_hours_histogram_sample_day": orbit_probe,
+            "orbits_covering_delhi_sample_day_utc_hours": covering_orbits,
             "image_ids_per_day_sample": list(n_per_day.items())[:5],
+            "note_units": (
+                "quota probe measured monthly regional mean ~3.74e-05 -> L3_NO2 bands are "
+                "mol/m2; Phase 1 multiplies by 1e6 to store umol/m2 (D1)"
+            ),
         },
     )
 

@@ -12,7 +12,6 @@ Writes g0_weather.json - the numbers the feasibility note quotes.
 """
 import json
 import time
-from datetime import datetime, timezone
 
 import sys
 from pathlib import Path
@@ -30,10 +29,12 @@ ERA5_HOURLY_SINGLE = "ECMWF/ERA5/HOURLY"
 def _latest_date(collection: str) -> dict:
     col = ee.ImageCollection(collection).limit(500, "system:time_start")
     latest = col.sort("system:time_start", False).first()
-    info = latest.getInfo() if latest else {}
-    t_ms = (info or {}).get("properties", {}).get("system:time_start")
-    when = datetime.fromtimestamp(t_ms / 1000, tz=timezone.utc).isoformat() if t_ms else None
-    return {"collection": collection, "latest_utc": when}
+    # ECMWF collections on GEE carry far-future sentinel system:time_start
+    # values (overflowing local epoch math on Windows), so format the date
+    # SERVER-side and keep the raw ms as a string for diagnosis only.
+    iso = latest.date().format("YYYY-MM-dd HH:mm:ss", "UTC").getInfo() if latest else None
+    raw_ms = latest.get("system:time_start").getInfo() if latest else None
+    return {"collection": collection, "latest_utc": iso, "raw_time_start_ms": str(raw_ms)}
 
 
 def main() -> None:

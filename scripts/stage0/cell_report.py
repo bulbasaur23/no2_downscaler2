@@ -35,11 +35,11 @@ def main() -> None:
     # JRC water occurrence aggregated over the Delhi NCR region (quick look)
     wa = cfg["study_areas"]["delhi_ncr"]
     region = ee.Geometry.Rectangle([wa["lon_min"], wa["lat_min"], wa["lon_max"], wa["lat_max"]])
+    # JRC Global Surface Water is a STATIC single Image (no .mean() there).
     water = (
         ee.Image(cfg["sources"]["water"])
         .select("occurrence")
         .gt(cfg["water_cutoffs"]["land_max_water_fraction"] * 100)
-        .mean()
     )
     water_frac = water.reduceRegion(
         ee.Reducer.mean(), region, scale=1113, maxPixels=1e9, bestEffort=True
