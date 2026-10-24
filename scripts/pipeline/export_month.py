@@ -111,9 +111,9 @@ def main() -> None:
     if bool(args.month) == (args.window == "auto"):
         ap.error("use exactly one of --month YYYY-MM or --window auto")
 
-    from no2map.config import load_config
+    from no2map.eerun import initialize_ee
 
-    cfg = load_config()
+    cfg = initialize_ee()  # Earth Engine session (D5: one project, one place)
     manifest = ExportManifest.load(EXPORTS_DIR / "manifest.json")
 
     months_list: list[str]
