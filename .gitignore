@@ -12,6 +12,7 @@ data/
 exports/
 mlruns/
 cache/
+.pytest_tmp/
 *.parquet
 *.pq
 *.geotiff
