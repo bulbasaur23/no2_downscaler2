@@ -30,7 +30,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Windows: the default temp base in %TEMP% creates a `pytest-current` symlink
-# that non-admin sessions cannot unlink during cleanup (WinError 5). Keeping
-# the tmp tree inside the repo avoids that entirely; it is gitignored.
-addopts = "--basetemp=.pytest_tmp"
+# basetemp is set per-process by conftest.py (Windows tmpdir fixes: avoid the
+# %TEMP%\pytest-current symlink cleanup crash AND concurrent-run collisions).
+
