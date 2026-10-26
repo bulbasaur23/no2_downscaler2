@@ -47,10 +47,11 @@ def _fmt(v, spec: str = ".3f") -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cities", required=True,
-                    help="comma-separated city ids available for training")
+                    help="comma-separated city ids available for training "
+                         "(test cities are loaded automatically)")
     ap.add_argument("--test-cities", default=None,
-                    help="comma-separated cities to score (default: leave-one-out "
-                         "over --cities)")
+                    help="comma-separated cities to score; excluded from the "
+                         "training set (default: leave-one-out over --cities)")
     ap.add_argument("--groups", default=",".join(FEATURE_GROUPS))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--alpha", type=float, default=0.1)
@@ -105,7 +106,9 @@ def main() -> int:
         return 2
 
     panels = {}
-    for city in cities:
+    for city in sorted(set(cities) | set(test_cities or [])):
+        # a held-out city is loaded for diagnostics and scoring even when it is
+        # not listed in --cities; transfer_report still never trains on it
         panel = load_training_panel(CONFIG, MANIFEST, EXPORTS, city)
         print(f"[g5] {city}: {len(panel):,} rows, months "
               f"{panel.attrs['months'][0]}..{panel.attrs['months'][-1]}")
