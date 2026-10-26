@@ -33,7 +33,8 @@ from no2map.features import (TARGET, build_features,  # noqa: E402
 from no2map.model import (PRED_COLS, XGBConfig, season_key,          # noqa: E402
                           run_blocked_evaluation,
                           run_chronological_evaluation)
-from no2map.variogram import gate_g2_block_verdict, ncr_width_m  # noqa: E402
+from no2map.variogram import (gate_g2_block_verdict,   # noqa: E402
+                              study_area_width_m)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -71,11 +72,13 @@ def main() -> int:
           f"months: {panel.attrs['months'][0]}..{panel.attrs['months'][-1]} "
           f"({len(panel.attrs['months'])} months)")
 
-    # conservative: the narrower NCR extent (lat, ~191 km) gates feasibility
-    g2 = gate_g2_block_verdict(args.block_m, min(ncr_width_m()))
-    advice = ("SPATIAL BLOCKED" if g2["blocking_feasible"] else
-              "G2 fallback: block too large for NCR - chronological + coarse "
-              "blocks; spatial claim via leave-one-city-out")
+    # conservative: the narrower study-area extent gates feasibility
+    # (per city, not hard-coded to Delhi's NCR rectangle)
+    g2 = gate_g2_block_verdict(args.block_m, min(study_area_width_m(args.city)))
+    advice = ("SPATIAL BLOCKED"
+              if g2["blocking_feasible"] else
+              "G2 fallback: block too large for this city - chronological + "
+              "coarse blocks; spatial claim via leave-one-city-out")
     print(f"[train] block {args.block_m:.0f} m, buffer {args.buffer_m:.0f} m -> {advice}")
 
     oof, report = run_blocked_evaluation(

@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from no2map.dataset import load_training_panel  # noqa: E402
 from no2map.model import run_ablation  # noqa: E402
-from no2map.variogram import gate_g2_block_verdict, ncr_width_m  # noqa: E402
+from no2map.variogram import (gate_g2_block_verdict,   # noqa: E402
+                              study_area_width_m)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,7 +45,7 @@ def main() -> int:
     print(f"[ablate] panel: {len(panel):,} rows | "
           f"months {panel.attrs['months'][0]}..{panel.attrs['months'][-1]}")
 
-    g2 = gate_g2_block_verdict(args.block_m, min(ncr_width_m()))
+    g2 = gate_g2_block_verdict(args.block_m, min(study_area_width_m(args.city)))
     print(f"[ablate] blocking: {'feasible' if g2['blocking_feasible'] else 'G2 FALLBACK'} "
           f"(block {args.block_m:.0f} m)")
 

@@ -25,7 +25,7 @@ from no2map.dataset import load_training_panel          # noqa: E402
 from no2map.features import TARGET                     # noqa: E402
 from no2map.variogram import (                          # noqa: E402
     TROPOMI_CELL_M, advisory_block_size, empirical_semivariogram,
-    gate_g2_block_verdict, ncr_width_m)
+    gate_g2_block_verdict, study_area_width_m)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -59,7 +59,7 @@ def main() -> int:
     for c, g, n in zip(res.bin_centers_m, res.gamma, res.n_pairs):
         print(f"       {c:9,.0f} {g:8.3f} {n:10d}")
 
-    lat_w, lon_w = ncr_width_m()
+    lat_w, lon_w = study_area_width_m(args.city)
     widths = (lon_w, lat_w)
     out = {"city": args.city, "n_dates": len(pick), "n_rows": len(sub),
            "range_m": res.range_m, "sill": res.sill,

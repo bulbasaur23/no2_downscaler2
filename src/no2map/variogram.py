@@ -184,8 +184,35 @@ def gate_g2_block_verdict(block_size_m: float, region_width_m: float) -> dict:
     }
 
 
+def study_area_width_m(city: str, config_path: str | Path | None = None,
+                       ) -> tuple[float, float]:
+    """A city's bbox extent in metres (lon, lat) from the locked config.
+
+    Phase 5 runs G2 per city, so the feasibility verdict must use THAT city's
+    study-area width, not Delhi's. `config_path` defaults to the repo config;
+    an unknown city raises, because silently scoring feasibility against the
+    wrong rectangle would make the G2 advice mean something else.
+    """
+    from pathlib import Path as _P
+
+    import yaml as _yaml
+
+    cfg_path = (_P(config_path) if config_path is not None else
+                _P(__file__).resolve().parents[2] / "configs" / "default.yaml")
+    cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    sa = (cfg.get("study_areas") or {}).get(city)
+    if not sa:
+        raise KeyError(f"unknown study area {city!r}; have "
+                       f"{sorted(cfg.get('study_areas') or {})}")
+    lat0 = (float(sa["lat_min"]) + float(sa["lat_max"])) / 2.0
+    dlon = ((float(sa["lon_max"]) - float(sa["lon_min"]))
+            * np.cos(np.radians(lat0)))
+    return (float(dlon * _EARTH_RADIUS_M * np.pi / 180.0),
+            float((float(sa["lat_max"]) - float(sa["lat_min"]))
+                  * _EARTH_RADIUS_M * np.pi / 180.0))
+
+
 def ncr_width_m() -> tuple[float, float]:
     """Delhi-NCR bbox extent in metres (lat/lon), from the locked config bbox
     (76.38-78.62 E, 27.60-29.32 N); used by the G2 feasibility check."""
-    dlon = (78.62 - 76.38) * np.cos(np.radians((27.60 + 29.32) / 2.0))
-    return float(dlon * _EARTH_RADIUS_M * np.pi / 180.0), float((29.32 - 27.60) * _EARTH_RADIUS_M * np.pi / 180.0)
+    return study_area_width_m("delhi_ncr")

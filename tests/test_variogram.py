@@ -83,6 +83,21 @@ class TestGeometry:
         assert w_ew == pytest.approx(219_000, rel=0.02)   # 2.24 deg at ~28.5 N
         assert w_ns == pytest.approx(191_000, rel=0.01)   # 1.72 deg
 
+    def test_study_area_width_smaller_cities(self):
+        from no2map.variogram import study_area_width_m
+        d_ew, d_ns = study_area_width_m("delhi_ncr")
+        b_ew, b_ns = study_area_width_m("bengaluru")
+        k_ew, k_ns = study_area_width_m("kolkata")
+        assert b_ew < d_ew and k_ew < d_ew   # 0.6 deg vs 2.24 deg
+        assert b_ns < d_ns and k_ns < d_ns
+        # and the compatibility wrapper still reads the locked Delhi bbox
+        assert (d_ew, d_ns) == ncr_width_m()
+
+    def test_unknown_study_area_raises(self):
+        from no2map.variogram import study_area_width_m
+        with pytest.raises(KeyError, match="unknown study area"):
+            study_area_width_m("atlantis")
+
 
 class TestEmpirical:
     def test_constant_field_zero_semivariance(self):
