@@ -10,8 +10,13 @@ excluded) through the blocked-CV machinery, then predicts the eval months
 (new processor 02.09.01) without refitting anything and reports cellwise +
 two-level (level/pattern) scores plus frozen-interval coverage. `--eval-months`
 defaults to the config's version_shift_test window (two months from its start).
-Hard guard: eval months' processor versions must not overlap training versions.
-The shift set must NEVER be used to tune - this script only reports; it writes
+The eval set is chosen PER DAY on the processor version measured over the
+city's overpass window: a day that still carries a training version (measured:
+2025-11 days 4-21, plus one mixed day) or two new versions is excluded and
+counted, because it cannot attribute a change to one update. That exclusion is
+on the treatment, never on outcomes. Hard guard: eval months' processor
+versions must not overlap training versions. The shift set must NEVER be used
+to tune - this script only reports; it writes
 data/shift/<city>_version_shift.json and returns 0. If the eval months are not
 exported yet it says so and exits 2 (it never silently shrinks the test).
 """
@@ -28,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from no2map.dataset import TrainingConfig, load_training_panel  # noqa: E402
 from no2map.features import FEATURE_GROUPS  # noqa: E402
-from no2map.version_shift import version_shift_report  # noqa: E402
+from no2map.version_shift import (partition_eval_days,  # noqa: E402
+                                  version_shift_report)
 from no2map.model import PRED_COLS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +52,31 @@ def default_eval_months(start: str, n_months: int = 2) -> list[str]:
     return out
 
 
+def day_versions_for(city: str, dates: list[str], hours: list[int],
+                     cache_path: Path) -> dict[str, list[str]]:
+    """Per-day processor versions within the city's overpass window (cached).
+
+    The update does not land on a month boundary, so the eval set is chosen
+    per DAY on the treatment (which processor produced it), never on outcomes.
+    Cached to disk: the answer cannot change for a past day and a rerun must
+    not spend EE quota again."""
+    cache: dict[str, list[str]] = {}
+    if cache_path.exists():
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    todo = [d for d in dates if d not in cache]
+    if todo:
+        from no2map.acquisition import day_processor_versions
+        from no2map.eerun import initialize_ee
+
+        initialize_ee()
+        for d in todo:
+            cache[d] = day_processor_versions(d, hours)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True),
+                              encoding="utf-8")
+    return {d: cache[d] for d in dates}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--city", required=True)
@@ -57,6 +88,10 @@ def main() -> int:
     ap.add_argument("--alpha", type=float, default=0.1)
     ap.add_argument("--block-m", type=float, default=30_000.0)
     ap.add_argument("--buffer-m", type=float, default=0.0)
+    ap.add_argument("--include-mixed-days", action="store_true",
+                    help="score every day of the eval months, including days "
+                         "that still carry a training processor version "
+                         "(off by default: such days cannot test the shift)")
     args = ap.parse_args()
     groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
@@ -107,17 +142,52 @@ def main() -> int:
 
     eval_frames = {}
     eval_versions = {}
+    excluded_by_month: dict[str, dict] = {}
+    kept_days_by_month: dict[str, list[str]] = {}
+    day_versions: dict[str, list[str]] = {}
+
+    from no2map.acquisition import overpass_utc_hours
+    from no2map.config import load_config
+
+    cfg = load_config()
+    area = cfg["study_areas"][args.city]
+    hours = overpass_utc_hours(area["lon_min"], area["lon_max"])
+    cache_path = ROOT / "data" / "shift" / f"day_versions_{args.city}.json"
+
     for month in eval_months:
-        e = manifest[f"{args.city}/{month}"]
         p = ROOT / "data" / "exports" / args.city / f"{args.city}_{month}.parquet"
-        eval_frames[month] = pd.read_parquet(p)
-        eval_versions[month] = list(e.get("processor_versions") or [])
-        print(f"[shift] eval {month}: {len(eval_frames[month]):,} rows, "
+        frame = pd.read_parquet(p)
+        days = sorted(frame["date"].str.slice(0, 10).unique())
+        day_versions.update(day_versions_for(args.city, days, hours, cache_path))
+
+        if args.include_mixed_days:
+            keep, excluded = days, {}
+        else:
+            keep, excluded = partition_eval_days(
+                {d: day_versions[d] for d in days}, train_versions)
+        if not keep:
+            print(f"[shift] {month}: no version-pure eval days "
+                  f"(excluded {len(excluded)}) - month dropped")
+            excluded_by_month[month] = excluded
+            continue
+
+        eval_frames[month] = frame[frame["date"].isin(keep)].copy()
+        eval_versions[month] = sorted({v for d in keep for v in day_versions[d]})
+        excluded_by_month[month] = excluded
+        kept_days_by_month[month] = keep
+        print(f"[shift] eval {month}: kept {len(keep)}/{len(days)} days "
+              f"({len(eval_frames[month]):,} rows), "
               f"versions {eval_versions[month]}")
-        if len(eval_versions[month]) > 1:
-            print(f"[shift] WARNING {month} mixes processor versions "
-                  f"{eval_versions[month]}: it is scored, but it is not "
-                  "version-pure and cannot stand alone as the shift claim")
+        if excluded:
+            reasons: dict[str, int] = {}
+            for v in excluded.values():
+                reasons[v["reason"]] = reasons.get(v["reason"], 0) + 1
+            print(f"[shift]   excluded days (treatment-based, never outcome-"
+                  f"based): {reasons}")
+
+    if not eval_frames:
+        print("[shift] no eval month has a version-pure day: nothing to score")
+        return 2
 
     rep = version_shift_report(
         train_panel, eval_frames, train_versions, eval_versions,
@@ -139,6 +209,14 @@ def main() -> int:
         print(f"[shift] NOTE mixed-version months: "
               f"{rep['mixed_version_months']}; their scores reflect an "
               "unknown blend of processor versions")
+
+    rep["eval_protocol"] = {
+        "pure_days_only": not args.include_mixed_days,
+        "kept_days": kept_days_by_month,
+        "excluded_days": excluded_by_month,
+        "day_versions": {d: day_versions[d] for m in kept_days_by_month
+                         for d in kept_days_by_month[m]},
+    }
 
     out_dir = ROOT / "data" / "shift"
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,8 @@ import pytest
 
 from no2map.features import FEATURE_GROUPS, TARGET
 from no2map.model import PRED_COLS
-from no2map.version_shift import fit_all, predict_frozen, version_shift_report
+from no2map.version_shift import (fit_all, partition_eval_days,
+                                  predict_frozen, version_shift_report)
 
 from tests.test_model import _synthetic_panel  # reuse the seeded generator
 
@@ -96,6 +97,21 @@ class TestFrozenScoring:
         s = rep["per_month"]["2025-11"]["scores"]["pred_model_a"]
         assert 0.5 <= s["coverage"] <= 1.0
 
+    def test_coverage_ignores_rows_without_an_observation(self):
+        # exported months contain insufficient/no_overpass rows with NaN
+        # target: they are not interval misses and must not deflate coverage
+        train = _synthetic_panel()
+        ev = _eval_frame()
+        half = len(ev) // 2
+        ev = ev.copy()
+        ev.loc[ev.index[:half], TARGET] = np.nan
+        rep = version_shift_report(
+            train, {"2025-11": ev}, TRAIN_VERSIONS,
+            {"2025-11": ["02.09.01"]}, GROUPS, seed=1)
+        s = rep["per_month"]["2025-11"]["scores"]["pred_model_a"]
+        assert s["n_coverage"] == len(ev) - half
+        assert 0.5 <= s["coverage"] <= 1.0
+
 
 class TestVersionPurity:
     """A month touched by two processors is scored but never pure (honesty)."""
@@ -120,6 +136,32 @@ class TestVersionPurity:
         assert month["version_pure"] is False
         assert month["versions"] == ["02.09.01", "03.00.DV"]
         assert "pred_model_a" in month["scores"]  # still measured, not dropped
+
+
+class TestEvalDayPurity:
+    """The eval set is chosen on the treatment (processor), never outcomes."""
+
+    def test_measured_2025_11_pattern(self):
+        # day-level truth measured from GEE over Delhi's overpass window
+        days = {
+            "2025-11-03": [],
+            "2025-11-20": ["2.8.0"],
+            "2025-11-22": ["02.09.01", "2.8.0"],
+            "2025-11-23": ["02.09.01"],
+            "2025-11-24": ["02.09.01", "03.00.DV"],
+        }
+        keep, excluded = partition_eval_days(days, ["2.8.0"])
+        assert keep == ["2025-11-23"]
+        assert excluded["2025-11-03"]["reason"] == "no_overpass_window"
+        assert excluded["2025-11-20"]["reason"] == "training_version_present"
+        assert excluded["2025-11-22"]["reason"] == "training_version_present"
+        assert excluded["2025-11-24"]["reason"] == "mixed_new_versions"
+
+    def test_all_pure_days_are_kept(self):
+        days = {f"2025-12-{d:02d}": ["02.09.01"] for d in range(1, 32)}
+        keep, excluded = partition_eval_days(days, ["2.8.0"])
+        assert len(keep) == 31
+        assert excluded == {}
 
 
 class TestFitPredict:

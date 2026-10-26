@@ -205,6 +205,24 @@ def month_processor_versions(year: int, mon: int) -> list[str]:
     return sorted(str(v) for v in vals)
 
 
+def day_processor_versions(date_str: str, hours: list[int] | None = None) -> list[str]:
+    """PROCESSOR_VERSION values of the images that could cover the city on a date.
+
+    A processor update does not land on a month boundary: measured on Delhi's
+    overpass window, 2025-11 was `2.8.0` until the 21st, mixed on the 22nd and
+    `02.09.01` from the 23rd. A month-level version list (over all global
+    orbits) therefore cannot answer "is this eval day under the new processor?"
+    - this per-day, overpass-windowed call can. Used by the version-shift
+    runner to keep only version-pure eval days; it is not a data value."""
+    start = ee.Date(date_str)
+    ic = (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2")
+          .filterDate(start, start.advance(1, "day")))
+    if hours:
+        ic = ic.filter(overpass_hour_filter(hours))
+    vals = ic.aggregate_array("PROCESSOR_VERSION").distinct().getInfo()
+    return sorted(str(v) for v in (vals or []))
+
+
 def convert_day_rows(sums_rows: list[dict], main_threshold: float) -> list[dict]:
     """Apply the pure D2 arithmetic to each cell's sums of one day."""
     out = []

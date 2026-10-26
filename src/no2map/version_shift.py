@@ -90,6 +90,37 @@ def predict_frozen(fitted: dict, eval_df: pd.DataFrame,
     return out
 
 
+def partition_eval_days(day_versions: dict[str, list[str]],
+                        train_versions: list[str]) -> tuple[list[str], dict[str, dict]]:
+    """Split eval days into version-pure new-processor days and exclusions.
+
+    The shift-set choice is made on the *treatment* (which processor produced
+    the day), never on outcomes. A day is kept only if every image that could
+    cover the city that day carries one single processor version outside the
+    training set; anything else cannot attribute a change to one update:
+
+      no_overpass_window     no image in the overpass window (D6)
+      training_version_present  at least one image is a training version
+      mixed_new_versions     several new versions in one day (ambiguous)
+    """
+    train = set(train_versions)
+    keep: list[str] = []
+    excluded: dict[str, dict] = {}
+    for day in sorted(day_versions):
+        versions = sorted(set(str(v) for v in (day_versions[day] or [])))
+        if not versions:
+            excluded[day] = {"reason": "no_overpass_window", "versions": []}
+        elif train & set(versions):
+            excluded[day] = {"reason": "training_version_present",
+                             "versions": versions}
+        elif len(versions) > 1:
+            excluded[day] = {"reason": "mixed_new_versions",
+                             "versions": versions}
+        else:
+            keep.append(day)
+    return keep, excluded
+
+
 def version_shift_report(
     train_panel: pd.DataFrame,
     eval_frames: dict[str, pd.DataFrame],
@@ -126,16 +157,29 @@ def version_shift_report(
         preds = predict_frozen(fitted, frame, groups)
         conf = fitted["conformal"]
         preds["conf_margin"] = conf.margin(preds)
-        cov_row = {
-            col: {
-                **{k: v for k, v in full_scores(preds, col).items()
-                   if k != "conformal"},
-                "coverage": float((np.abs(preds[TARGET] - preds[col])
-                                   <= preds["conf_margin"]).mean()),
-                "mean_width": float(preds["conf_margin"].mean()),
-            }
-            for col in PRED_COLS if col in preds
-        }
+        # Exported months contain insufficient/no_overpass rows whose target is
+        # NaN; they carry no observation, so they must not be counted as
+        # interval misses (that would deflate coverage for every method).
+        base_ok = (np.isfinite(preds[TARGET].to_numpy(dtype=float))
+                   & np.isfinite(preds["conf_margin"].to_numpy(dtype=float)))
+        cov_row = {}
+        for col in PRED_COLS:
+            if col not in preds:
+                continue
+            s = {k: v for k, v in full_scores(preds, col).items()
+                 if k != "conformal"}
+            ok = base_ok & np.isfinite(preds[col].to_numpy(dtype=float))
+            if ok.any():
+                y = preds.loc[ok, TARGET].to_numpy(dtype=float)
+                p = preds.loc[ok, col].to_numpy(dtype=float)
+                m = preds.loc[ok, "conf_margin"].to_numpy(dtype=float)
+                s["coverage"] = float((np.abs(y - p) <= m).mean())
+                s["mean_width"] = float(m.mean())
+            else:
+                s["coverage"] = float("nan")
+                s["mean_width"] = float("nan")
+            s["n_coverage"] = int(ok.sum())
+            cov_row[col] = s
         out["per_month"][month] = {
             "versions": eval_versions.get(month, []),
             "version_pure": len(eval_versions.get(month, [])) <= 1,
