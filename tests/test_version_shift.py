@@ -14,8 +14,9 @@ import pytest
 
 from no2map.features import FEATURE_GROUPS, TARGET
 from no2map.model import PRED_COLS
-from no2map.version_shift import (fit_all, partition_eval_days,
-                                  predict_frozen, version_shift_report)
+from no2map.version_shift import (VersionShiftPremiseError, fit_all,
+                                  partition_eval_days, predict_frozen,
+                                  version_shift_report)
 
 from tests.test_model import _synthetic_panel  # reuse the seeded generator
 
@@ -46,7 +47,7 @@ class TestPremiseGuard:
     def test_overlap_between_train_and_eval_versions_rejected(self):
         train = _synthetic_panel()
         ev = _eval_frame()
-        with pytest.raises(ValueError, match="premise"):
+        with pytest.raises(VersionShiftPremiseError, match="premise"):
             version_shift_report(
                 train, {"2025-11": ev}, TRAIN_VERSIONS,
                 {"2025-11": ["2.8.0"]}, GROUPS, seed=1)

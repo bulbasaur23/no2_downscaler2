@@ -37,6 +37,15 @@ from no2map.model import PRED_COLS, XGBConfig, run_blocked_evaluation, season_ke
 from no2map.evaluation import full_scores
 
 
+class VersionShiftPremiseError(ValueError):
+    """The eval days are not new-processor days: no shift claim is possible.
+
+    A dedicated type so entrypoints can explain this cleanly without catching
+    unrelated ValueErrors (e.g. an XGBoost input failure), which would hide a
+    real defect behind a 'cannot score' message.
+    """
+
+
 def fit_all(train_panel: pd.DataFrame, groups: list[str], seed: int,
             alpha: float, block_m: float = 30_000.0, buffer_m: float = 0.0,
             xgb: XGBConfig | None = None) -> dict:
@@ -147,7 +156,7 @@ def version_shift_report(
     overlap = sorted(set(train_versions) & set(
         v for vs in eval_versions.values() for v in vs))
     if overlap:
-        raise ValueError(
+        raise VersionShiftPremiseError(
             f"version-shift premise violated: eval months use training "
             f"processor versions {overlap}; the shift set must be new-"
             "processor months (use the g1 report / manifest versions)")

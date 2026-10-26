@@ -80,6 +80,10 @@ wide (72.5 µmol/m²). That is a real distribution shift, not seed noise — the
 output therefore carries the processor versions, and reconstructed values should not be compared
 across the update without saying so.
 
+Caveat on precision: the 2025-11 column rests on **8 days only**, so its level correlation (8
+points) and bias are indicative rather than precise; 2025-12 (31 days) is the stronger half of the
+evidence.
+
 ### Known blockers
 
 - ~~**Earth Engine permission**~~ **resolved 2026-10-26**: the caller had lacked

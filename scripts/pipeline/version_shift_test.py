@@ -34,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from no2map.dataset import (TrainingConfig, load_training_panel,  # noqa: E402
                             missing_window_months)
 from no2map.features import FEATURE_GROUPS  # noqa: E402
-from no2map.version_shift import (partition_eval_days,  # noqa: E402
-                                  version_shift_report)
+from no2map.version_shift import (VersionShiftPremiseError,  # noqa: E402
+                                  partition_eval_days, version_shift_report)
 from no2map.model import PRED_COLS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +53,7 @@ def default_eval_months(start: str, n_months: int = 2) -> list[str]:
     return out
 
 
-def day_versions_for(city: str, dates: list[str], hours: list[int],
+def day_versions_for(dates: list[str], hours: list[int],
                      cache_path: Path) -> dict[str, list[str]]:
     """Per-day processor versions within the city's overpass window (cached).
 
@@ -171,7 +171,7 @@ def main() -> int:
         p = ROOT / "data" / "exports" / args.city / f"{args.city}_{month}.parquet"
         frame = pd.read_parquet(p)
         days = sorted(frame["date"].str.slice(0, 10).unique())
-        day_versions.update(day_versions_for(args.city, days, hours, cache_path))
+        day_versions.update(day_versions_for(days, hours, cache_path))
 
         if args.include_mixed_days:
             keep, excluded = days, {}
@@ -211,8 +211,8 @@ def main() -> int:
             groups, seed=args.seed, alpha=args.alpha,
             block_m=args.block_m, buffer_m=args.buffer_m,
         )
-    except ValueError as exc:
-        # the premise guard: a mixed eval set cannot test a processor shift
+    except VersionShiftPremiseError as exc:
+        # premise guard only: unrelated errors must surface as themselves
         print(f"[shift] cannot score: {exc}")
         return 2
 
