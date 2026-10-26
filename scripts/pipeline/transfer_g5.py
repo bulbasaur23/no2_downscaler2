@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from no2map.dataset import (done_months, load_training_panel,  # noqa: E402
                             missing_window_months)
 from no2map.features import FEATURE_GROUPS  # noqa: E402
+from no2map.manifest import STATUS_DONE, ExportManifest  # noqa: E402
 from no2map.model import PRED_COLS  # noqa: E402
 from no2map.transfer import transfer_report  # noqa: E402
 
@@ -120,11 +121,22 @@ def main() -> int:
         ood_quantile=args.ood_quantile, ood_k=args.ood_k,
     )
 
+    # provenance per city (D3): which processor versions produced its months.
+    # A transfer claim spans versions unless this line says otherwise.
+    man = ExportManifest.load(MANIFEST)
+    for city in rep["cities"]:
+        vs = sorted({str(v)
+                     for k, e in man.entries.items()
+                     if k.startswith(f"{city}/") and e.status == STATUS_DONE
+                     for v in (e.processor_versions or [])})
+        rep["cities"][city]["processor_versions"] = vs
+
     print("\n[g5] per-city data diagnostics:")
     for city, d in rep["cities"].items():
         print(f"  {city:<12s} cells={d['n_cells']:5d} obs={d['observed_fraction']:.3f} "
               f"median={_fmt(d['target_median'], '.1f')} umol/m2 "
-              f"water_p95={_fmt(d['water_fraction_p95'])}")
+              f"water_p95={_fmt(d['water_fraction_p95'])} "
+              f"versions={','.join(d['processor_versions']) or 'n/a'}")
 
     print("\n[g5] transfer (frozen on the training cities):")
     for city, f in rep["folds"].items():
