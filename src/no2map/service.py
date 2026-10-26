@@ -7,11 +7,11 @@ Endpoints (per plan):
   GET  /api/models    -> trained artifacts in data/runs (provenance data)
 
 The compute function is INJECTED (compute_fn: request_dict -> result dict).
-The real EE-feature fetch will be plugged here after G1; with the default
-stub the job emits the polygon-compute plan: validated polygon stats, the
-covered cells with their area-overlap fractions (exact, Sutherland-Hodgman),
-and the buffered fetch window cells will ACT on. This keeps the HTTP/job/
-validation/rate-limit scaffolding fully testable before GEE wiring.
+By default `create_app` wires the REAL path (`live_compute_factory`: EE fetch ->
+shared features -> schema-pinned artifact), and the geometric-only `stub_compute`
+remains as the explicit fallback when no artifact is available. Tests inject
+their own compute_fn (or pass use_live=False) so the HTTP/job/validation/
+rate-limit scaffolding is exercised without Earth Engine.
 
 Rate limiting: sliding-window counter per client IP (plan: per-IP rate
 limiting) - limits are constructor injected so tests can shrink them.
@@ -26,6 +26,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 from no2map.jobs import JobStore
+from no2map.live import DATE_CAP_LAG_DAYS, GRID_CELL_DEG, latest_available_date
 from no2map.polygon import (
     MAX_VERTICES,
     cells_for_polygon,
@@ -38,8 +39,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def stub_compute(request: dict) -> dict:
-    """Posts the geometric part of the Phase-4 flow; replaced by the real
-    EE feature fetch + artifact prediction once data is live."""
+    """Geometric-only preview, used when no trained artifact is available.
+
+    The real path is `live_compute`; this fallback keeps the HTTP/job flow
+    usable (and honest - it says exactly what it did) before G3 artifacts or
+    in a fresh checkout where data/runs is empty."""
     info = validate_polygon(request["polygon"])
     overlaps = cells_for_polygon(request["polygon"])
     window = polygon_bbox_buffered(request["polygon"])
@@ -56,16 +60,70 @@ def stub_compute(request: dict) -> dict:
         "cell_weights": overlaps,
         "fetch_window": window,
         "date": request.get("date"),
-        "note": "geometric preview: EE features + model prediction land after Gate G1/G3",
+        "note": "geometric preview only: no model artifact was loaded, so no "
+                "values are reconstructed",
     }
+
+
+def live_compute_factory(
+    config_path: str | Path = ROOT / "configs" / "default.yaml",
+    exports_dir: str | Path = ROOT / "data" / "exports",
+    runs_dir: str | Path = ROOT / "data" / "runs",
+):
+    """Build a request->result function backed by the EE live path.
+
+    Predictors are created lazily and cached per city: each loads the newest
+    complete artifact and the statics cache once, so a request only pays for
+    the EE fetch. Configuration/artifact problems surface as job failures with
+    the real message instead of a silently empty map."""
+    import yaml
+
+    from no2map.live import LivePredictor, load_latest_artifact, load_statics
+
+    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    cache: dict[str, LivePredictor] = {}
+    lock = threading.Lock()
+
+    def _predictor(city: str) -> LivePredictor:
+        with lock:
+            if city not in cache:
+                art, run_name = load_latest_artifact(runs_dir, city)
+                cache[city] = LivePredictor(
+                    city=city,
+                    city_cfg=cfg["study_areas"][city],
+                    artifact=art,
+                    statics=load_statics(exports_dir, city),
+                    run_name=run_name,
+                    main_threshold=float(
+                        cfg["observed_cell_rule"]["main"]),
+                )
+            return cache[city]
+
+    def compute(request: dict) -> dict:
+        city = request["city"]
+        if city not in cfg["study_areas"]:
+            raise ValueError(f"unknown city {city!r}")
+        return _predictor(city).compute(
+            [tuple(p) for p in request["polygon"]], request["date"])
+
+    return compute
 
 
 def create_app(
     store_dir: str | Path = ROOT / "data" / "jobs",
     runs_dir: str | Path = ROOT / "data" / "runs",
-    compute_fn=stub_compute,
+    compute_fn=None,
     rate_limit_per_min: int = 30,
+    exports_dir: str | Path = ROOT / "data" / "exports",
+    config_path: str | Path = ROOT / "configs" / "default.yaml",
+    use_live: bool = True,
 ) -> FastAPI:
+    """API factory. `use_live=True` (default) serves real predictions; tests
+    inject `compute_fn` (or pass use_live=False) to exercise the flow without
+    Earth Engine or a trained artifact."""
+    if compute_fn is None:
+        compute_fn = (live_compute_factory(config_path, exports_dir, runs_dir)
+                      if use_live else stub_compute)
     app = FastAPI(title="NO2 mapping platform", version="0.1.0")
     store = JobStore(store_dir)
 
@@ -108,9 +166,21 @@ def create_app(
             validate_polygon([tuple(p) for p in polygon])
         except ValueError as e:
             raise HTTPException(400, f"invalid polygon: {e}") from e
+        cap = latest_available_date()
+        if str(date) > cap:
+            raise HTTPException(
+                400, f"date {date} is beyond the availability cap {cap} "
+                     f"(D4: sources lag {DATE_CAP_LAG_DAYS} days)")
         job = store.create({"city": city, "polygon": polygon, "date": date})
         bg.add_task(_run_job, job["id"], store, compute_fn)
         return {"id": job["id"], "status": job["status"]}
+
+    @app.get("/api/availability")
+    def availability():
+        """D4 'data as of' line: the newest date the picker may offer."""
+        return {"latest_date": latest_available_date(),
+                "date_cap_lag_days": DATE_CAP_LAG_DAYS,
+                "grid_cell_deg": GRID_CELL_DEG}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):

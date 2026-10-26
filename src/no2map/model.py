@@ -26,7 +26,7 @@ from xgboost import XGBRegressor
 
 from no2map.baselines import Climatology, DailyCityMean, RidgeBaseline
 from no2map.conformal import SplitConformal
-from no2map.evaluation import full_scores
+from no2map.evaluation import anomaly_scores, full_scores
 from no2map.features import (
     FEATURE_GROUPS,
     TARGET,
@@ -184,7 +184,9 @@ def run_blocked_evaluation(
     report = {"protocol": "spatial_blocked", "alpha": alpha,
               "folds": list(rows_by_block), "n_folds": len(rows_by_block)}
     for col in PRED_COLS:
-        report[col] = full_scores(oof, col)
+        s = full_scores(oof, col)
+        s.update(anomaly_scores(oof, col))
+        report[col] = s
     report["conformal"] = {
         "alpha": alpha,
         "q_by_season": {k: conf.q_by_stratum[k]
@@ -275,6 +277,7 @@ def run_chronological_evaluation(
     }
     for col in PRED_COLS:
         s = full_scores(preds, col)
+        s.update(anomaly_scores(preds, col))
         s["coverage"] = float(
             (np.abs(preds[TARGET] - preds[col]) <= preds["conf_margin"]).mean())
         s["mean_width"] = float(preds["conf_margin"].mean())

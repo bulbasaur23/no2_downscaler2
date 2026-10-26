@@ -15,12 +15,14 @@ import pandas as pd
 import pytest
 
 from no2map.evaluation import (
+    anomaly_scores,
     bias,
     full_scores,
     level_scores,
     mae,
     pattern_scores,
     pearson,
+    r2,
     rmse,
     TARGET,
 )
@@ -125,8 +127,60 @@ class TestFullScores:
     def test_complete_dict(self):
         df = _frame()
         s = full_scores(df.assign(pred=df[TARGET]))
-        for k in ("n", "rmse", "mae", "bias",
+        for k in ("n", "rmse", "mae", "bias", "r2",
                   "level_rmse", "level_r", "level_n_dates",
                   "pattern_mean_r", "pattern_n_dates"):
             assert k in s
         assert s["rmse"] == pytest.approx(0.0)
+
+
+class TestR2:
+    def test_perfect_and_mean_predictor(self):
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        assert r2(y, y) == pytest.approx(1.0)
+        assert r2(y, np.full(4, y.mean())) == pytest.approx(0.0)
+        assert r2(y, np.zeros(4)) < 0.0  # worse than the mean
+
+    def test_constant_target_is_nan(self):
+        y = np.full(5, 7.0)
+        assert np.isnan(r2(y, np.full(5, 6.0)))
+
+
+class TestAnomalyScores:
+    def _df(self) -> pd.DataFrame:
+        # climatology anchor = 10 everywhere; obs departs from it by -2..+2
+        obs = np.array([8.0, 9.0, 11.0, 12.0])
+        clim = np.full(4, 10.0)
+        return pd.DataFrame({TARGET: obs, "pred_climatology": clim})
+
+    def test_perfect_tracking_is_skill_one(self):
+        df = self._df()
+        out = anomaly_scores(df.assign(pred_model=df[TARGET]), "pred_model")
+        assert out["skill_vs_climatology"] == pytest.approx(1.0)
+        assert out["r_anomaly"] == pytest.approx(1.0)
+
+    def test_reproducing_climatology_is_skill_zero(self):
+        df = self._df()
+        out = anomaly_scores(df.assign(pred_model=10.0), "pred_model")
+        assert out["skill_vs_climatology"] == pytest.approx(0.0)
+        # constant anomaly -> correlation undefined, not silently 0
+        assert np.isnan(out["r_anomaly"])
+
+    def test_partial_skill_hand_value(self):
+        df = self._df()
+        # pred anomaly [-1, 0, 0, 1] vs obs anomaly [-2, -1, 1, 2]:
+        # residual sq = 1 each -> 1 - 1/2.5 = 0.6
+        out = anomaly_scores(df.assign(pred_model=[9.0, 10.0, 10.0, 11.0]),
+                             "pred_model")
+        assert out["skill_vs_climatology"] == pytest.approx(0.6)
+
+    def test_climatology_against_itself(self):
+        df = self._df()
+        out = anomaly_scores(df, "pred_climatology")
+        assert out["skill_vs_climatology"] == 0.0
+        assert np.isnan(out["r_anomaly"])
+
+    def test_missing_anchor_is_nan(self):
+        df = self._df().drop(columns=["pred_climatology"])
+        out = anomaly_scores(df.assign(pred_model=10.0), "pred_model")
+        assert np.isnan(out["skill_vs_climatology"]) and np.isnan(out["r_anomaly"])

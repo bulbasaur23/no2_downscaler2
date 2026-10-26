@@ -33,6 +33,16 @@ def bias(y: np.ndarray, p: np.ndarray) -> float:
     return float(np.mean(np.asarray(p, float) - np.asarray(y, float)))
 
 
+def r2(y: np.ndarray, p: np.ndarray) -> float:
+    """Coefficient of determination (plan section 6 metric list)."""
+    y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
+    ss_res = float(np.sum((y - p) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    if ss_tot < 1e-12:
+        return float("nan")  # constant target: R2 undefined, not 1.0
+    return 1.0 - ss_res / ss_tot
+
+
 def pearson(x: np.ndarray, y: np.ndarray) -> float:
     x, y = np.asarray(x, float), np.asarray(y, float)
     if len(x) < 3:
@@ -79,10 +89,49 @@ def pattern_scores(df: pd.DataFrame, pred_col: str = "pred",
     }
 
 
+def anomaly_scores(df: pd.DataFrame, pred_col: str = "pred",
+                   ref_col: str = "pred_climatology") -> dict:
+    """Skill on anomalies, relative to the climatology anchor (G3 fallback).
+
+    The anchor is the OUT-OF-FOLD climatology prediction (fitted on training
+    rows of each fold only), so nothing about the held-out rows enters it.
+    Because the same anchor is subtracted from every prediction, anomaly RMSE
+    is identical to plain RMSE - what carries extra information is:
+      - r_anomaly: does the method track departures from climatology
+        (temporal and spatial) rather than only reproducing the mean state?
+      - skill_vs_climatology: 1 - MSE(method)/MSE(climatology), the standard
+        skill score (positive = better than climatology).
+    Climatology scored against itself is (nan, 0.0) by construction.
+    """
+    if ref_col not in df.columns:
+        return {"r_anomaly": float("nan"), "skill_vs_climatology": float("nan")}
+    ok = (np.isfinite(df[TARGET].to_numpy(dtype=float)) &
+          np.isfinite(df[pred_col].to_numpy(dtype=float)) &
+          np.isfinite(df[ref_col].to_numpy(dtype=float)))
+    d = df.loc[ok]
+    if d.empty:
+        return {"r_anomaly": float("nan"), "skill_vs_climatology": float("nan")}
+    obs_anom = d[TARGET].to_numpy(dtype=float) - d[ref_col].to_numpy(dtype=float)
+    pred_anom = d[pred_col].to_numpy(dtype=float) - d[ref_col].to_numpy(dtype=float)
+    mse_ref = float(np.mean(obs_anom ** 2))
+    if mse_ref < 1e-12:
+        skill = float("nan")
+    else:
+        skill = 1.0 - float(np.mean((obs_anom - pred_anom) ** 2)) / mse_ref
+    r = float("nan")
+    if pred_col != ref_col and len(obs_anom) >= 3:
+        try:
+            r = pearson(obs_anom, pred_anom)
+        except ValueError:
+            r = float("nan")
+    return {"r_anomaly": r,
+            "skill_vs_climatology": 0.0 if pred_col == ref_col else skill}
+
+
 def full_scores(df: pd.DataFrame, pred_col: str = "pred") -> dict:
-    """Cellwise RMSE/MAE/bias + both two-level scores - the Phase-3 runner's
-    single scoring entrypoint so the baselines and the model are scored
-    through the exact same code path (always-shown rule)."""
+    """Cellwise RMSE/MAE/R2/bias + both two-level scores - the Phase-3
+    runner's single scoring entrypoint so the baselines and the model are
+    scored through the exact same code path (always-shown rule)."""
     m = np.isfinite(df[TARGET].to_numpy(dtype=float)) & np.isfinite(df[pred_col].to_numpy(dtype=float))
     d = df.loc[m]
     out = {
@@ -90,6 +139,7 @@ def full_scores(df: pd.DataFrame, pred_col: str = "pred") -> dict:
         "rmse": rmse(d[TARGET].to_numpy(), d[pred_col].to_numpy()),
         "mae": mae(d[TARGET].to_numpy(), d[pred_col].to_numpy()),
         "bias": bias(d[TARGET].to_numpy(), d[pred_col].to_numpy()),
+        "r2": r2(d[TARGET].to_numpy(), d[pred_col].to_numpy()),
     }
     out.update({f"level_{k}": v for k, v in level_scores(d, pred_col).items()})
     out.update({f"pattern_{k}": v for k, v in pattern_scores(d, pred_col).items()})

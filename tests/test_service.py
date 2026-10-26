@@ -23,7 +23,7 @@ SQUARE = [(77.0, 28.0), (77.4, 28.0), (77.4, 28.4), (77.0, 28.4)]
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     app = create_app(store_dir=tmp_path / "jobs", runs_dir=tmp_path / "runs",
-                     rate_limit_per_min=5)
+                     rate_limit_per_min=5, use_live=False)
     return TestClient(app)
 
 
@@ -103,12 +103,35 @@ class TestValidation:
         def boom(req):
             raise RuntimeError("EE exploded")
         c = TestClient(create_app(store_dir=tmp_path / "j",
-                                  runs_dir=tmp_path / "r", compute_fn=boom))
+                                  runs_dir=tmp_path / "r", compute_fn=boom,
+                                  use_live=False))
         jid = c.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
                                         "date": "2024-07-01"}).json()["id"]
         g = c.get(f"/api/jobs/{jid}").json()
         assert g["status"] == "failed" and "EE exploded" in g["error"]
         assert c.get(f"/api/results/{jid}").status_code == 409
+
+
+class TestAvailability:
+    def test_reports_d4_cap(self, client):
+        r = client.get("/api/availability")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["date_cap_lag_days"] == 6
+        assert body["grid_cell_deg"] == pytest.approx(0.05)
+        from no2map.live import latest_available_date
+        assert body["latest_date"] == latest_available_date()
+
+    def test_future_date_beyond_cap_is_rejected(self, client):
+        r = client.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                           "date": "2099-01-01"})
+        assert r.status_code == 400
+        assert "availability cap" in r.json()["detail"]
+
+    def test_date_inside_cap_is_accepted(self, client):
+        r = client.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                           "date": "2024-07-01"})
+        assert r.status_code == 200
 
 
 class TestRateLimit:
