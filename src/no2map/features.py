@@ -82,11 +82,20 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     Everything here is computable at REQUEST time from data with short
     latency (weather) or static layers - no NO2-derived covariates ever
-    enter (that would break the draw-any-polygon live guarantee)."""
+    enter (that would break the draw-any-polygon live guarantee).
+
+    `month` is a pure function of `date`; exports stay narrow by not storing
+    it, and the live request frame always has a date too - so when month is
+    absent it is derived here rather than trusted from a second source."""
     derivable(df, ["wind_u10_inst", "wind_v10_inst", "blh_m_inst",
                    "wind_u10_l24", "wind_v10_l24", "wind_u10_l48", "wind_v10_l48",
-                   "t2m_k_inst", "d2m_k_inst", "sp_pa_inst", "month"])
+                   "t2m_k_inst", "d2m_k_inst", "sp_pa_inst"])
     out = df.copy()
+    if "month" not in out.columns:
+        if "date" not in out.columns:
+            raise KeyError(
+                "input dataframe lacks 'month' and has no 'date' to derive it")
+        out["month"] = pd.to_datetime(out["date"]).dt.month.astype(int)
 
     out["t2m_deg_c"] = out["t2m_k_inst"] - 273.15
     out["rh_pct"] = _relative_humidity_pct(out["t2m_k_inst"], out["d2m_k_inst"])

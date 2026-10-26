@@ -128,9 +128,18 @@ class TestHardFailures:
     def test_precip_lag_violation(self):
         df = healthy_df()
         df.loc[df.index[0], "precip_l48_m"] = 0.0
-        df.loc[df.index[0], "precip_l24_m"] = 0.01
+        df.loc[df.index[0], "precip_l24_m"] = 0.01  # 10 mm > 0.1 mm tolerance
         checks = self.run_check(df)
         assert any(not c.passed and c.name == "precip_invariants" for c in checks)
+
+    def test_precip_micrometre_quantization_tolerated(self):
+        # ECMWF accumulation packing noise: a few um either way is not a
+        # lag inversion (measured live in 2025-02)
+        df = healthy_df()
+        df.loc[df.index[0], "precip_l24_m"] = 5e-6
+        df.loc[df.index[0], "precip_l48_m"] = 4e-6
+        checks = self.run_check(df)
+        assert all(c.passed for c in checks if c.name == "precip_invariants")
 
     def test_manifest_drift(self):
         df = healthy_df()

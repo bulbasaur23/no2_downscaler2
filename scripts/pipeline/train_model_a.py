@@ -2,14 +2,15 @@
 
 Usage:
   python scripts/pipeline/train_model_a.py --city delhi_ncr \
-      [--block-m 30000] [--buffer-m 0] [--groups static,weather_inst,...]
+      [--block-m 30000] [--buffer-m 0] [--groups static,weather_inst,...] [--chron]
 
 Flow: dataset module assembles the config-window training panel (manifest-
 driven); run_blocked_evaluation scores Model A + Ridge + climatology +
 daily-city-mean through identical spatial-block folds (variogram-backed
 block size from --block-m, with the plan's buffer gap); the OOF frame plus
-the conformal calibration are written for reporting. The version-shift test
-is separate and must never be used to tune.
+the conformal calibration are written for reporting. With --chron the
+train-early/test-late protocol runs too, because G3 requires both. The
+version-shift test is separate and must never be used to tune.
 """
 from __future__ import annotations
 
@@ -29,7 +30,8 @@ from no2map.dataset import load_training_panel         # noqa: E402
 from no2map.features import (TARGET, build_features,  # noqa: E402
                              clean_training_frame, feature_block)
 from no2map.model import (PRED_COLS, XGBConfig, season_key,          # noqa: E402
-                          run_blocked_evaluation)
+                          run_blocked_evaluation,
+                          run_chronological_evaluation)
 from no2map.variogram import gate_g2_block_verdict, ncr_width_m  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +51,9 @@ def main() -> int:
                     help="1 - interval coverage target")
     ap.add_argument("--max-rows", type=int, default=None,
                     help="optional cap on training rows (debug runs)")
+    ap.add_argument("--chron", action="store_true",
+                    help="also run the train-early/test-late protocol (G3 "
+                         "requires both blocked and chronological)")
     args = ap.parse_args()
     groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
@@ -105,6 +110,33 @@ def main() -> int:
               "block_m": args.block_m, "buffer_m": args.buffer_m,
               "protocol": advice, "ran_at": report["config"]["ran_at"]})
     print(f"[train] artifact saved (model + conformal + {len(fe_cols)} fe cols)")
+
+    # chronological co-report: the plan requires BOTH protocols for G3, so the
+    # claim cannot rest on whichever split happens to look better. Everything
+    # here is fitted on the earlier dates only; the future stays untouched.
+    if args.chron:
+        print("[train] running chronological protocol (train-early / test-late) ...")
+        chron_oof, chron_report = run_chronological_evaluation(
+            panel, groups, seed=args.seed, alpha=args.alpha,
+            block_m=args.block_m, buffer_m=args.buffer_m)
+        report["chronological"] = chron_report
+        chron_oof.to_parquet(run_dir / "chron_oof.parquet", index=False)
+        tr_lo, tr_hi = chron_report["train_dates"]
+        te_lo, te_hi = chron_report["test_dates"]
+        print(f"[chron] train {tr_lo}..{tr_hi} ({chron_report['n_train_dates']} dates) "
+              f"-> test {te_lo}..{te_hi} ({chron_report['n_test_dates']} dates)")
+        print("[chron] RMSE / interval coverage (frozen on the future):")
+        for c in PRED_COLS:
+            if c not in chron_report:
+                continue
+            s = chron_report[c]
+            print(f"  {c:<18s} {s['rmse']:8.3f}  cov={s['coverage']:.3f}  "
+                  f"width={s['mean_width']:.3f}")
+        chron_rows = {c: chron_report[c]["rmse"] for c in PRED_COLS
+                      if c in chron_report}
+        report["chronological_best"] = min(chron_rows, key=chron_rows.get)
+        print(f"[chron] best method: {report['chronological_best']}")
+
     oof.to_parquet(run_dir / "oof.parquet", index=False)
     (run_dir / "metrics.json").write_text(
         json.dumps(report, indent=2, default=float), encoding="utf-8")

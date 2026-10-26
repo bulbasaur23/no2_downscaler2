@@ -49,7 +49,7 @@ class TestJobFlow:
         assert g.json()["error"] is None
         res = _result_of(client, jid)
         assert res["n_cells"] == 64  # 0.4 deg square = 8x8 full cells
-        assert set(res["cell_weights"].values()) == {1.0}
+        assert all(abs(w - 1.0) < 1e-9 for w in res["cell_weights"].values())
         assert res["fetch_window"]["lat_min"] < 28.0  # buffer included
 
     def test_sub_cell_polygon_says_so(self, client):
@@ -132,7 +132,7 @@ class TestModels:
         (runs / "artifact.json").write_text(json.dumps({
             "feature_schema_version": "fm-v1", "created_at": "t",
             "groups": ["static"], "alpha": 0.1}), encoding="utf-8")
-        c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=runs))
+        c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=runs.parent))
         out = c.get("/api/models").json()
         m = out["models"]
         assert len(m) == 1 and m[0]["artifact"] and m[0]["alpha"] == 0.1

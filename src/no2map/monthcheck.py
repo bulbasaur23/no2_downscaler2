@@ -115,12 +115,19 @@ def check_month(
         "min_nonnan_frac=" + (f"{frac.min():.3f}" if len(frac) else "NA")
         + (f" thin={thin}" if thin else ""))
 
-    # 9. precip invariants: non-negative and l48 window >= l24 window
+    # 9. precip invariants: non-negative and l48 window >= l24 window.
+    # Tolerance 0.1 mm: ECMWF accumulation packing quantizes hourly precip
+    # at 1e-6 m, so shared-window sums can differ by a few micrometres in
+    # EITHER direction (measured: 2025-02-20, 4/45080 rows, ~1-5 um). The
+    # defect class this check exists for (raw total_precipitation summed
+    # across lags, resetting at midnight) shows up at millimetre scale.
+    PRECIP_LAG_TOL_M = 1e-4
     p24, p48 = df["precip_l24_m"], df["precip_l48_m"]
     neg = int(((p24 < -1e-12) | (p48 < -1e-12)).sum())
-    lag = int((p48 < p24 - 1e-9).sum())
+    lag = int((p48 < p24 - PRECIP_LAG_TOL_M).sum())
+    worst = float((p24 - p48).max()) if len(df) else 0.0
     add("precip_invariants", neg == 0 and lag == 0,
-        f"negative={neg} l48_l24_violations={lag}")
+        f"negative={neg} lag_violations={lag} worst_inversion_m={worst:.2e}")
 
     # 10. manifest parity (records what landed vs what the frame says)
     if manifest_entry is not None:

@@ -161,6 +161,21 @@ class TestContract:
         with pytest.raises(KeyError, match="d2m_k_inst"):
             build_features(df)
 
+    def test_month_derived_from_date_when_absent(self):
+        # real exports carry 'date' but not 'month'; month is a pure function
+        # of date, so the shared module derives it (train/serve parity)
+        df = _row_frame().drop(columns=["month"])
+        df["date"] = "2025-02-20"
+        out = build_features(df)
+        assert out["month"].iloc[0] == 2
+        assert out["month_sin"].iloc[0] == pytest.approx(
+            math.sin(2 * math.pi * (2 - 1) / 12.0))
+
+    def test_month_without_date_raises(self):
+        df = _row_frame().drop(columns=["month"])
+        with pytest.raises(KeyError, match="date"):
+            build_features(df)
+
     def test_schema_version_is_pinned(self):
         assert FEATURE_SCHEMA_VERSION == "fm-v1-2026-10-24"
 
