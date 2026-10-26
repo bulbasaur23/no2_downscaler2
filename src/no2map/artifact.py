@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
 
+from no2map.baselines import Climatology
 from no2map.conformal import SplitConformal
 from no2map.features import FEATURE_SCHEMA_VERSION, TARGET, build_features, feature_block
 from no2map.model import season_key
@@ -48,10 +49,16 @@ class ModelArtifact:
     groups: list[str]
     feature_schema_version: str
     meta: dict
+    climatology: Climatology | None = None
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """Point predictions + conformal half-widths through the SHARED
-        feature module (never re-implement a feature at serve time)."""
+        feature module (never re-implement a feature at serve time).
+
+        Also returns `climatology` (per-cell monthly median, fitted on training
+        rows) whenever the bundle carries it: G3 fell short of climatology on
+        blocked splits, so every reconstructed value must be shown next to its
+        climatology anchor rather than presented as an observation."""
         if self.feature_schema_version != FEATURE_SCHEMA_VERSION:
             raise RuntimeError(
                 f"artifact schema {self.feature_schema_version} != installed "
@@ -69,6 +76,10 @@ class ModelArtifact:
             out["month"] = rows["month"].to_numpy()
         else:
             out["month"] = np.full(len(rows), np.nan)
+        if self.climatology is not None:
+            out["climatology"] = self.climatology.predict(rows).to_numpy()
+        else:
+            out["climatology"] = np.nan
         # conformal margin: season-keyed with the pooled fallback root
         keys = [season_key({"month": int(m)}) if pd.notna(m) else None
                 for m in out["month"]]
@@ -84,6 +95,7 @@ def save_model_artifact(
     fe_cols: list[str],
     groups: list[str],
     meta: dict,
+    climatology: Climatology | None = None,
 ) -> Path:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +106,7 @@ def save_model_artifact(
     q_payload = {(_POOLED_KEY if k is None else str(k)): v
                  for k, v in (conformal.q_by_stratum or {}).items()}
     payload = {
-        "artifact_version": 1,
+        "artifact_version": 2,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "fe_cols": list(fe_cols),
         "groups": list(groups),
@@ -103,6 +115,9 @@ def save_model_artifact(
         "key_fn": "season_quarter",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "meta": meta,
+        # G3 honest-report path: the serving bundle must be able to show the
+        # climatology anchor next to Model A's estimate, not just the model.
+        "climatology": climatology.to_dict() if climatology is not None else None,
     }
     (run_dir / ARTIFACT_FILE).write_text(
         json.dumps(payload, indent=2, default=float), encoding="utf-8")
@@ -118,6 +133,7 @@ def load_model_artifact(run_dir: str | Path) -> ModelArtifact:
     model.load_model(str(run_dir / MODEL_FILE))
     q = {None if k == _POOLED_KEY else k: val
          for k, val in payload["q_by_stratum"].items()}
+    clim_payload = payload.get("climatology")
     return ModelArtifact(
         model=model,
         q_by_stratum=q,
@@ -126,4 +142,6 @@ def load_model_artifact(run_dir: str | Path) -> ModelArtifact:
         groups=list(payload["groups"]),
         feature_schema_version=payload["feature_schema_version"],
         meta=payload.get("meta", {}),
+        climatology=(Climatology.from_dict(clim_payload)
+                     if clim_payload else None),
     )

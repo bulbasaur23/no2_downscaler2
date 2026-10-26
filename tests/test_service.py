@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from no2map.grid import cell_from_point
+from no2map.polygon import validate_polygon
 from no2map.service import create_app
 
 SQUARE = [(77.0, 28.0), (77.4, 28.0), (77.4, 28.4), (77.0, 28.4)]
@@ -110,6 +111,65 @@ class TestValidation:
         g = c.get(f"/api/jobs/{jid}").json()
         assert g["status"] == "failed" and "EE exploded" in g["error"]
         assert c.get(f"/api/results/{jid}").status_code == 409
+
+
+class TestResultsExport:
+    def test_csv_export_has_status_column_and_cells(self, tmp_path):
+        def compute(req):
+            return {"city": req["city"], "date": req["date"], "cells": [
+                {"cell_id": "r1c1", "lon": 77.0, "lat": 28.0, "weight": 1.0,
+                 "state": "observed", "reason_code": None, "source": "observed",
+                 "value": 12.5, "value_observed": 12.5, "pred": 11.0,
+                 "climatology": 9.75, "margin": 3.0, "interval_lo": 8.0,
+                 "interval_hi": 14.0},
+                {"cell_id": "r1c2", "lon": 77.05, "lat": 28.0, "weight": 0.4,
+                 "state": "insufficient", "reason_code": "low_coverage",
+                 "source": "reconstructed", "value": 10.0,
+                 "value_observed": None, "pred": 10.0, "climatology": 9.75,
+                 "margin": 2.5, "interval_lo": 7.5, "interval_hi": 12.5},
+            ]}
+
+        c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=tmp_path / "r",
+                                  compute_fn=compute, use_live=False))
+        jid = c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                        "date": "2024-07-01"}).json()["id"]
+        r = c.get(f"/api/results/{jid}/export.csv")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        lines = r.text.strip().splitlines()
+        header = lines[0].split(",")
+        assert header[0] == "cell_id"
+        assert {"state", "source", "value", "interval_lo", "climatology"} <= set(header)
+        assert len(lines) == 3
+        assert ",observed," in lines[1] and ",insufficient," in lines[2]
+
+    def test_csv_for_failed_job_is_409(self, tmp_path):
+        def boom(req):
+            raise RuntimeError("nope")
+        c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=tmp_path / "r",
+                                  compute_fn=boom, use_live=False))
+        jid = c.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
+                                        "date": "2024-07-01"}).json()["id"]
+        assert c.get(f"/api/results/{jid}/export.csv").status_code == 409
+        assert c.get("/api/results/nope/export.csv").status_code == 404
+
+    def test_demo_regions_are_valid_polygons(self, client):
+        out = client.get("/api/demo/regions").json()["regions"]
+        assert {r["name"] for r in out} == {"delhi", "hyderabad"}
+        for r in out:
+            validate_polygon([tuple(p) for p in r["polygon"]])
+            assert r["city"] in {"delhi_ncr", "hyderabad"}
+
+
+class TestFrontend:
+    def test_index_served(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+        body = r.text
+        for needle in ("leaflet", "/api/jobs", "/api/availability", "Export CSV",
+                       "climatology", "g3note"):
+            assert needle.lower() in body.lower()
 
 
 class TestAvailability:

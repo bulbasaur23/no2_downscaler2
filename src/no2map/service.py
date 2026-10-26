@@ -18,12 +18,17 @@ limiting) - limits are constructor injected so tests can shrink them.
 """
 from __future__ import annotations
 
+import csv
+import io
+import json
 import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import (BackgroundTasks, FastAPI, HTTPException, Request,
+                     Response)
+from fastapi.responses import HTMLResponse
 
 from no2map.jobs import JobStore
 from no2map.live import DATE_CAP_LAG_DAYS, GRID_CELL_DEG, latest_available_date
@@ -36,6 +41,16 @@ from no2map.polygon import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# D7 demo mode: fixed polygons so the app can be exercised without drawing.
+DEMO_REGIONS = {
+    "delhi": {"city": "delhi_ncr",
+              "polygon": [[76.95, 28.40], [77.45, 28.40],
+                          [77.45, 28.80], [76.95, 28.80]]},
+    "hyderabad": {"city": "hyderabad",
+                  "polygon": [[78.25, 17.30], [78.60, 17.30],
+                              [78.60, 17.60], [78.25, 17.60]]},
+}
 
 
 def stub_compute(request: dict) -> dict:
@@ -69,26 +84,31 @@ def live_compute_factory(
     config_path: str | Path = ROOT / "configs" / "default.yaml",
     exports_dir: str | Path = ROOT / "data" / "exports",
     runs_dir: str | Path = ROOT / "data" / "runs",
+    cache_path: str | Path | None = ROOT / "data" / "cache" / "cells.sqlite",
 ):
     """Build a request->result function backed by the EE live path.
 
     Predictors are created lazily and cached per city: each loads the newest
     complete artifact and the statics cache once, so a request only pays for
     the EE fetch. Configuration/artifact problems surface as job failures with
-    the real message instead of a silently empty map."""
+    the real message instead of a silently empty map. One shared CellCache
+    implements the plan's five-part key (pass cache_path=None to disable)."""
     import yaml
 
-    from no2map.live import LivePredictor, load_latest_artifact, load_statics
+    from no2map.cache import CellCache
+    from no2map.live import (LivePredictor, load_g3_summary,
+                             load_latest_artifact, load_statics)
 
     cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    cache: dict[str, LivePredictor] = {}
+    cache = CellCache(cache_path) if cache_path else None
+    cache_by_city: dict[str, LivePredictor] = {}
     lock = threading.Lock()
 
     def _predictor(city: str) -> LivePredictor:
         with lock:
-            if city not in cache:
+            if city not in cache_by_city:
                 art, run_name = load_latest_artifact(runs_dir, city)
-                cache[city] = LivePredictor(
+                cache_by_city[city] = LivePredictor(
                     city=city,
                     city_cfg=cfg["study_areas"][city],
                     artifact=art,
@@ -96,8 +116,10 @@ def live_compute_factory(
                     run_name=run_name,
                     main_threshold=float(
                         cfg["observed_cell_rule"]["main"]),
+                    cache=cache,
+                    g3=load_g3_summary(exports_dir, city),
                 )
-            return cache[city]
+            return cache_by_city[city]
 
     def compute(request: dict) -> dict:
         city = request["city"]
@@ -149,6 +171,13 @@ def create_app(
 
     # ---- endpoints --------------------------------------------------------
 
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        page = Path(__file__).with_name("web") / "index.html"
+        if not page.exists():
+            raise HTTPException(404, "frontend not installed")
+        return HTMLResponse(page.read_text(encoding="utf-8"))
+
     @app.post("/api/jobs")
     def post_job(req: Request, body: dict, bg: BackgroundTasks):
         if not _allow(_client_ip(req)):
@@ -180,7 +209,8 @@ def create_app(
         """D4 'data as of' line: the newest date the picker may offer."""
         return {"latest_date": latest_available_date(),
                 "date_cap_lag_days": DATE_CAP_LAG_DAYS,
-                "grid_cell_deg": GRID_CELL_DEG}
+                "grid_cell_deg": GRID_CELL_DEG,
+                "cities": ["delhi_ncr", "bengaluru", "kolkata", "hyderabad"]}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -199,6 +229,33 @@ def create_app(
             raise HTTPException(409, f"job not done (status={job['status']})")
         return job["result"]
 
+    @app.get("/api/results/{job_id}/export.csv")
+    def export_csv(job_id: str):
+        """CSV export with the status column (plan: GeoTIFF may be cut first,
+        CSV stays). Always reports the cell state, so observed and
+        reconstructed rows are never conflated in downstream use."""
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such job")
+        if job["status"] != "done":
+            raise HTTPException(409, f"job not done (status={job['status']})")
+        result = job["result"]
+        cols = ["cell_id", "lon", "lat", "weight", "state", "reason_code",
+                "source", "value", "value_observed", "pred", "climatology",
+                "margin", "interval_lo", "interval_hi", "valid_fraction"]
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(result.get("cells") or [])
+        fname = f"no2_{result.get('city', 'city')}_{result.get('date', 'date')}.csv"
+        return Response(buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{fname}"'})
+
+    @app.get("/api/demo/regions")
+    def demo_regions():
+        return {"regions": [{"name": k, **v} for k, v in DEMO_REGIONS.items()]}
+
     @app.get("/api/models")
     def list_models():
         runs = sorted(Path(runs_dir).glob("*_modelA_*")) if Path(runs_dir).exists() else []
@@ -208,7 +265,7 @@ def create_app(
             if not art.exists():
                 out.append({"run": d.name, "artifact": False})
                 continue
-            meta = __import__("json").loads(art.read_text(encoding="utf-8"))
+            meta = json.loads(art.read_text(encoding="utf-8"))
             out.append({"run": d.name, "artifact": True,
                         "feature_schema_version": meta.get("feature_schema_version"),
                         "created_at": meta.get("created_at"),

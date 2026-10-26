@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NO2 mapping platform</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  body { font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #15202b; }
+  .panel { position: absolute; z-index: 500; background: #ffffffee; border: 1px solid #c9d3dd;
+           border-radius: 8px; padding: 10px 12px; box-shadow: 0 2px 10px #0002; }
+  #controls { top: 12px; left: 12px; width: 300px; }
+  #controls h1 { font-size: 15px; margin: 0 0 8px; }
+  #controls label { display: block; margin: 6px 0 2px; font-weight: 600; }
+  #controls select, #controls input[type=date] { width: 100%; padding: 4px; box-sizing: border-box; }
+  .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  button { padding: 6px 10px; border: 1px solid #8aa0b5; background: #f2f6fa; border-radius: 6px;
+           cursor: pointer; font: inherit; }
+  button.primary { background: #1f5f8b; border-color: #1f5f8b; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin-top: 8px; min-height: 18px; color: #555; }
+  #status.error { color: #a11; font-weight: 600; }
+  #g3note { display: none; margin-top: 8px; font-size: 12px; color: #5a3b00; background: #fff6e0;
+            border: 1px solid #e8c98a; border-radius: 6px; padding: 6px 8px; line-height: 1.4; }
+  #summary { bottom: 12px; left: 12px; width: 330px; max-height: 46%; overflow: auto; }
+  #summary h2 { font-size: 13px; margin: 0 0 6px; }
+  #summary table { width: 100%; border-collapse: collapse; }
+  #summary td { padding: 2px 0; vertical-align: top; }
+  #summary td:first-child { color: #556; width: 46%; }
+  #warnings { margin: 6px 0 0; padding-left: 16px; color: #8a4b00; }
+  #legend { top: 12px; right: 12px; width: 176px; }
+  #legend h2 { font-size: 13px; margin: 0 0 6px; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px;
+        vertical-align: -2px; border: 1px solid #0003; }
+  .muted { color: #667; }
+  #empty { position: absolute; z-index: 480; top: 50%; left: 50%; transform: translate(-50%,-50%);
+           background: #fffc; padding: 10px 14px; border-radius: 8px; border: 1px dashed #9ab; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="controls" class="panel">
+  <h1>NO<sub>2</sub> mapping — draw a polygon</h1>
+  <label for="city">City / study area</label>
+  <select id="city"></select>
+  <label for="date">Date (capped by data availability)</label>
+  <input id="date" type="date" />
+  <div class="row">
+    <button id="run" class="primary" disabled>Map polygon</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div class="row" id="demo"></div>
+  <div class="row">
+    <button data-mode="source" class="mode">Observed / reconstructed</button>
+    <button data-mode="coverage" class="mode">Coverage</button>
+    <button data-mode="uncertainty" class="mode">Uncertainty</button>
+  </div>
+  <div class="row">
+    <button id="export" disabled>Export CSV</button>
+  </div>
+  <div id="status"></div>
+  <div id="g3note"></div>
+  <div id="asof" class="muted"></div>
+</div>
+
+<div id="legend" class="panel">
+  <h2>Legend</h2>
+  <div id="legendBody"></div>
+</div>
+
+<div id="summary" class="panel">
+  <h2>Summary</h2>
+  <div id="summaryBody" class="muted">Draw a polygon (or pick a demo region), choose a date, then press “Map polygon”.</div>
+  <ul id="warnings"></ul>
+</div>
+
+<div id="empty">Observed cells come from TROPOMI L3; cells without a valid overpass are reconstructed by Model A and labelled as such.</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let map, drawnItems, cellsLayer, currentJobId = null, currentResult = null;
+let lastPolygon = null, layerMode = "source", availability = null;
+
+function setStatus(text, isError) {
+  $("status").textContent = text || "";
+  $("status").className = isError ? "error" : "";
+}
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toFixed(d);
+
+async function init() {
+  try {
+    availability = await (await fetch("/api/availability")).json();
+  } catch (e) { setStatus("API unreachable: " + e, true); return; }
+  $("date").max = availability.latest_date;
+  $("date").value = availability.latest_date;
+  $("asof").textContent = `Data as of ${availability.latest_date} (sources lag ${availability.date_cap_lag_days} days) · ${availability.grid_cell_deg}° grid`;
+
+  for (const c of availability.cities) $("city").add(new Option(c, c));
+
+  try {
+    const demo = await (await fetch("/api/demo/regions")).json();
+    for (const r of demo.regions) {
+      const b = document.createElement("button");
+      b.textContent = "Demo: " + r.name;
+      b.onclick = () => { $("city").value = r.city; drawPolygon(r.polygon); };
+      $("demo").appendChild(b);
+    }
+  } catch (e) { /* demo mode is optional */ }
+
+  map = L.map("map").setView([28.55, 77.4], 9);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              { maxZoom: 18, attribution: "© OpenStreetMap contributors" }).addTo(map);
+  drawnItems = new L.FeatureGroup().addTo(map);
+  cellsLayer = L.layerGroup().addTo(map);
+  map.addControl(new L.Control.Draw({
+    draw: { polygon: true, rectangle: true, marker: false, circle: false,
+            polyline: false, circlemarker: false },
+    edit: { featureGroup: drawnItems, edit: false, remove: true }
+  }));
+  map.on(L.Draw.Event.CREATED, (e) => {
+    drawnItems.clearLayers();
+    drawnItems.addLayer(e.layer);
+    lastPolygon = ringOf(e.layer);
+    $("run").disabled = !lastPolygon;
+    setStatus(`${lastPolygon.length}-vertex polygon ready.`);
+  });
+  $("run").disabled = true;
+}
+
+function ringOf(layer) {
+  const ll = layer.getLatLngs()[0];
+  return ll.map((p) => [+p.lng.toFixed(6), +p.lat.toFixed(6)]);
+}
+
+function drawPolygon(ring) {
+  drawnItems.clearLayers();
+  const lyr = L.polygon(ring.map(([lon, lat]) => [lat, lon]), { color: "#1f5f8b" });
+  drawnItems.addLayer(lyr);
+  lastPolygon = ring;
+  $("run").disabled = false;
+  map.fitBounds(lyr.getBounds(), { padding: [30, 30] });
+  setStatus("Demo polygon selected.");
+}
+
+async function runJob() {
+  if (!lastPolygon) return;
+  const body = { city: $("city").value, polygon: lastPolygon, date: $("date").value };
+  $("run").disabled = true;
+  setStatus("Submitting job…");
+  let r;
+  try {
+    r = await fetch("/api/jobs", { method: "POST", headers: { "content-type": "application/json" },
+                                   body: JSON.stringify(body) });
+  } catch (e) { setStatus("Request failed: " + e, true); $("run").disabled = false; return; }
+  if (!r.ok) {
+    const detail = await r.text();
+    setStatus("Rejected: " + detail, true);
+    $("run").disabled = false;
+    return;
+  }
+  currentJobId = (await r.json()).id;
+  $("export").disabled = true;
+  poll(currentJobId);
+}
+
+async function poll(id) {
+  let j;
+  try { j = await (await fetch("/api/jobs/" + id)).json(); }
+  catch (e) { setStatus("Polling failed: " + e, true); $("run").disabled = false; return; }
+  if (j.status === "queued" || j.status === "running") {
+    setStatus(`Job ${id}: ${j.status}…`);
+    setTimeout(() => poll(id), 1200);
+  } else if (j.status === "done") {
+    const res = await (await fetch("/api/results/" + id)).json();
+    currentResult = res;
+    render(res);
+    $("run").disabled = false;
+    $("export").disabled = false;
+    setStatus(`Job ${id}: done${res.cache_hit ? " (cache hit)" : ""}.`);
+  } else {
+    setStatus("Job failed: " + (j.error || "unknown error"), true);
+    $("run").disabled = false;
+  }
+}
+
+function colorFor(c) {
+  if (layerMode === "source") {
+    if (c.source === "observed") return "#1b9e77";
+    if (c.source === "reconstructed") return "#377eb8";
+    return "#9aa5ad";
+  }
+  if (layerMode === "coverage") {
+    const v = c.valid_fraction;
+    if (v === null || v === undefined) return "#e6e6e6";
+    const t = Math.max(0, Math.min(1, v));
+    return `hsl(${200 - 160 * t}, 65%, ${62 - 22 * t}%)`;  // blue->red
+  }
+  const all = (currentResult?.cells || []).map((x) => x.margin).filter((m) => m !== null);
+  const max = Math.max(0.001, ...all);
+  const t = Math.min(1, (c.margin ?? 0) / max);
+  return `hsl(${210 - 210 * t}, 70%, ${58 - 16 * t}%)`;    // low->high uncertainty
+}
+
+function popupFor(c) {
+  return `<b>${c.cell_id}</b><br>
+    state: <b>${c.state}</b>${c.reason_code ? " (" + c.reason_code + ")" : ""}<br>
+    label: ${c.source}<br>
+    value: <b>${fmt(c.value)}</b> µmol/m²<br>
+    observed: ${fmt(c.value_observed)}<br>
+    model: ${fmt(c.pred)} [${fmt(c.interval_lo)}, ${fmt(c.interval_hi)}]<br>
+    climatology anchor: ${fmt(c.climatology)}<br>
+    margin: ±${fmt(c.margin)}<br>
+    valid fraction: ${fmt(c.valid_fraction, 3)}<br>
+    overlap weight: ${fmt(c.weight, 3)}`;
+}
+
+function render(res) {
+  cellsLayer.clearLayers();
+  const d = 0.05 / 2;
+  for (const c of res.cells || []) {
+    const bounds = [[c.lat - d, c.lon - d], [c.lat + d, c.lon + d]];
+    L.rectangle(bounds, { color: "#22303c", weight: 0.4, fillColor: colorFor(c),
+                          fillOpacity: 0.72 })
+      .bindPopup(popupFor(c))
+      .addTo(cellsLayer);
+  }
+  if ((res.cells || []).length) {
+    map.fitBounds(cellsLayer.getBounds(), { padding: [20, 20] });
+  }
+  const s = res.summary || {};
+  const rows = [
+    ["Cells", s.n_cells],
+    ["Weighted mean", `${fmt(s.weighted_mean)} µmol/m²`],
+    ["Observed share", `${fmt(100 * s.observed_fraction, 1)} %`],
+    ["Reconstructed share", `${fmt(100 * s.reconstructed_fraction, 1)} %`],
+    ["Climatology anchor", `${fmt(s.weighted_mean_climatology)} µmol/m²`],
+    ["Mean ±interval", `±${fmt(s.weighted_mean_margin)} µmol/m²`],
+    ["Date", res.date],
+    ["Model", res.model?.run || "—"],
+    ["Feature schema", res.model?.feature_schema_version || "—"],
+    ["Processor", (res.data?.processor_versions || []).join(", ") || "—"],
+    ["Cache", res.cache_hit ? "hit" : "miss"],
+  ];
+  $("summaryBody").classList.remove("muted");
+  $("summaryBody").innerHTML = "<table>" +
+    rows.map(([k, v]) => `<tr><td>${k}</td><td><b>${v}</b></td></tr>`).join("") + "</table>";
+  $("warnings").innerHTML = (res.warnings || []).map((w) => `<li>${w}</li>`).join("");
+  renderG3(res.g3);
+  renderLegend();
+}
+
+function renderG3(g3) {
+  const el = $("g3note");
+  if (!g3) { el.style.display = "none"; el.innerHTML = ""; return; }
+  const b = g3.blocked || {}, c = g3.chronological || {};
+  const signed = (v) => (v === null || v === undefined) ? "—"
+    : (Number(v) > 0 ? "+" : "") + Number(v).toFixed(2);
+  el.style.display = "block";
+  el.innerHTML =
+    `<b>Validation (G3): ${g3.g3_mode || "reported"}</b><br>` +
+    `Unseen areas: model ${signed(b.model_minus_climatology_rmse)} µmol/m² vs per-cell climatology` +
+    `${b.beats_beyond_noise ? "" : " — does not beat it"}.<br>` +
+    `Future dates: model ${signed(c.model_minus_climatology_rmse)} µmol/m²` +
+    `${c.beats_beyond_noise ? " — beats climatology" : " — does not beat climatology"}.<br>` +
+    `Reconstructed cells are model estimates shown beside the climatology anchor; they are not observations.`;
+}
+
+function renderLegend() {
+  if (layerMode === "source") {
+    $("legendBody").innerHTML = `
+      <div><span class="sw" style="background:#1b9e77"></span>observed (TROPOMI)</div>
+      <div><span class="sw" style="background:#377eb8"></span>reconstructed (Model A, shown beside its climatology anchor)</div>
+      <div><span class="sw" style="background:#9aa5ad"></span>unavailable</div>
+      <div class="muted" style="margin-top:6px">Click a cell for its inspector.</div>`;
+  } else if (layerMode === "coverage") {
+    $("legendBody").innerHTML = `
+      <div><span class="sw" style="background:#2f7fb8"></span>high valid fraction</div>
+      <div><span class="sw" style="background:#b83f2f"></span>low valid fraction</div>
+      <div class="muted" style="margin-top:6px">D2 rule: ≥50% valid area = observed.</div>`;
+  } else {
+    $("legendBody").innerHTML = `
+      <div><span class="sw" style="background:#3d6dd6"></span>small interval</div>
+      <div><span class="sw" style="background:#d63d3d"></span>large interval</div>
+      <div class="muted" style="margin-top:6px">Split-conformal, α = ${fmt(currentResult?.model?.alpha ?? 0.1, 2)}.</div>`;
+  }
+}
+
+function setMode(mode) {
+  layerMode = mode;
+  if (currentResult) render(currentResult); else renderLegend();
+}
+
+function clearAll() {
+  drawnItems.clearLayers();
+  cellsLayer.clearLayers();
+  lastPolygon = null;
+  currentResult = null;
+  currentJobId = null;
+  $("run").disabled = true;
+  $("export").disabled = true;
+  setStatus("");
+  $("summaryBody").classList.add("muted");
+  $("summaryBody").textContent = "Draw a polygon (or pick a demo region), choose a date, then press “Map polygon”.";
+  $("warnings").innerHTML = "";
+  renderG3(null);
+}
+
+$("run").onclick = runJob;
+$("clear").onclick = clearAll;
+$("export").onclick = () => {
+  if (currentJobId) window.location = `/api/results/${currentJobId}/export.csv`;
+};
+document.querySelectorAll("button.mode").forEach((b) => {
+  b.onclick = () => setMode(b.dataset.mode);
+});
+init();
+</script>
+</body>
+</html>

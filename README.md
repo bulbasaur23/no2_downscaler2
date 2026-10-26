@@ -21,6 +21,46 @@ and **honest validation**.
    *climatology* or be reported as such, and results are labelled with units, coverage, model
    version, and data versions.
 
+## Status: gates on real data (Delhi NCR)
+
+| Gate | Status | Evidence |
+|---|---|---|
+| **G0** feasibility | PASS | `docs/feasibility.md`, Stage-0 reports in `data/stage0/` |
+| **G1** Delhi complete | **PASS** | 30 exported months 2023-04 → 2025-09, 0 failures, 0 warnings — `data/exports/g1_report_delhi_ncr.json` |
+| **G2** baselines + block size | **PASS (advice)** | residual variogram range **59.5 km**, sill 632.4 → block **89,278 m** with a 30,000 m buffer is feasible; 119 km impractical — `data/exports/g2_variogram_delhi_ncr.json` |
+| **G3** Model A checkpoint | **PASS as `honest_report`** | see below — `data/exports/g3_report_delhi_ncr.json` |
+| **G4** live polygon app | code complete, **parity run pending** | app + live path built; `scripts/pipeline/parity_check.py` needs Earth Engine auth |
+
+### G3 result, stated plainly
+
+Three seeds, 89 km spatial blocks + 30 km gap, per-cell climatology as the honesty anchor:
+
+| Protocol | Model A RMSE | Climatology RMSE | Delta | Beyond seed noise? |
+|---|---|---|---|---|
+| Blocked (unseen areas) | 38.5 ± 0.2 | 36.45 | **+2.03 ± 0.20** (worse) | yes, worse |
+| Chronological (unseen future dates) | 18.76 ± 0.02 | 20.34 | **−1.58 ± 0.02** (better) | yes, better |
+
+- Anomaly skill vs climatology: **−0.10 (blocked)**, **+0.15 (chronological)**
+- Static-only baseline: 41.95 blocked → weather/lags/temporal features are worth 3.68 µmol/m²
+- **Verdict: `honest_report`.** Model A tracks day-to-day and seasonal level well and generalises
+  forward in time, but it does **not** beat per-cell climatology at guessing a cell it has never
+  seen. The plan's fallback is therefore active: the app returns **observed values** where TROPOMI
+  has them, and where it does not it shows the Model A estimate **next to its climatology anchor**,
+  both explicitly labelled, with the G3 verdict on screen. Nothing is tuned on the held-out future.
+
+What this means for a user: the observed/reconstructed distinction is the load-bearing one. Treat
+"observed" cells as measurement and "reconstructed" cells as a model-informed estimate whose
+per-cell climatology is shown beside it — not as a measurement you can act on alone.
+
+### Known blockers
+
+- **Earth Engine permission**: the caller currently lacks
+  `serviceusage.services.use` on project `alan-no2-downscaler`, so any fresh fetch fails. This
+  blocks the G4 real-data parity run and the remaining 2025-11/12 exports needed for the
+  D3 version-shift test. Re-authenticate / grant the role, then rerun the two commands above.
+- The version-shift test (`scripts/pipeline/version_shift_test.py`) stays unrun until those two
+  post-update months exist; it is not tuned against, only reported.
+
 ## Scope tiers (from the v3 plan)
 
 | Tier | Contents | Target |
@@ -71,14 +111,16 @@ claims, coastal modelling (water is masked; coastal cells are warned only).
 
 ```
 configs/        default.yaml — grid, thresholds, study areas, versions (locked decisions)
-src/no2map/     package code (grid, states, config, ...)
-scripts/        stage0/ feasibility probes; later phases add pipeline scripts
-tests/          unit tests (grid scheme, observed-cell rule, taxonomy)
-docs/           feasibility note, data dictionary, retraining note
-data/           gitignored: Parquet exports, reports, cache
+src/no2map/     package: grid, states, features (the train/serve contract), baselines,
+                model (blocked + chronological runners), conformal, artifact (serving
+                bundle), live (polygon request path), cache, service (FastAPI) + web/
+scripts/        stage0/ feasibility probes; pipeline/ export, validation, training, parity
+tests/          unit tests for every contract above (277 tests)
+docs/           feasibility note, data dictionary
+data/           gitignored: Parquet exports, runs, reports, cache
 ```
 
-## Quick start (Phase 0)
+## Install
 
 ```powershell
 python -m venv .venv
@@ -104,9 +146,49 @@ python scripts\stage0\quota_cost.py            # one-image compute cost (D5)
 
 Feasibility findings go into `docs/feasibility.md` — that plus the Parquet month is Gate G0.
 
+## Running the pipeline (G1 → G4)
+
+All commands are resumable/idempotent except the export worker, which must be run **one process
+per city at a time** (it writes the manifest).
+
+```powershell
+# G1: export the configured window for one city (resumable; skips done months)
+python scripts\pipeline\export_month.py --city delhi_ncr --window auto
+
+# G1 completeness report (month presence, schema, states, versions)
+python scripts\pipeline\validate_g1.py --city delhi_ncr
+
+# G2: residual variogram -> advisory block size and feasibility verdict
+python scripts\pipeline\variogram_g2.py --city delhi_ncr
+
+# G3: full evidence — blocked seed sweep + chronological seed sweep + static-only
+python scripts\pipeline\validate_g3.py --city delhi_ncr --block-m 89278 --buffer-m 30000
+
+# Train Model A and persist the serving bundle (model + conformal + climatology anchor)
+python scripts\pipeline\train_model_a.py --city delhi_ncr --block-m 89278 --buffer-m 30000 --chron
+
+# G4: real-data parity, training path vs live path (needs Earth Engine auth)
+python scripts\pipeline\parity_check.py --city delhi_ncr --date 2025-02-10 --cells 12
+```
+
+### Running the app
+
+```powershell
+.venv\Scripts\python -m uvicorn no2map.service:create_app --factory --port 8000
+```
+
+Open <http://127.0.0.1:8000/> — draw a polygon (or press a demo region), pick a date (capped at
+"data as of" per D4), and map it. The UI shows the observed/reconstructed split, coverage and
+uncertainty layers, a per-cell inspector, the climatology anchor, the G3 validation note, and CSV
+export of the exact cells returned. Results are cached per cell on
+(cell, date, feature schema, processor version, model version), so re-querying the same date costs
+no Earth Engine work. Predictions on dates inside the training window are flagged in-sample.
+
 ## Limits (stated, per plan §7 and the risk register)
 
 - Retrieval bias: aerosols/haze can be misread as cloud; winter-haze gaps are seasonal.
+- **Model A does not beat per-cell climatology on unseen spatial blocks (G3 `honest_report`)**;
+  reconstructed cells are shown with their climatology anchor and are not measurement.
 - Reconstructed maps are *modelling*, not observation; evaluated only on real gap shapes.
 - Single-day retrievals are noisy — daily, weekly and monthly aggregations all reported.
 - Columns are not surface concentrations; coastal cells are excluded with a warning.

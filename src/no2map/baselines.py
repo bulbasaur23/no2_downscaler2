@@ -96,6 +96,42 @@ class Climatology:
         probe = pd.MultiIndex.from_frame(df[["cell_id", "month"]])
         return float((~probe.isin(seen)).mean())
 
+    def to_dict(self) -> dict:
+        """JSON-safe form for the serving artifact (no pickle, no callables).
+
+        The whole ladder is stored, not just the (cell, month) table: a live
+        request can hit a cell/month the training window never saw, and the
+        coarse-to-fine fallback must behave exactly as it did in training.
+        """
+        if self.by_cell_month is None:
+            raise RuntimeError("climatology not fitted")
+        return {
+            "by_cell_month": [
+                {"cell_id": str(r.cell_id), "month": int(r.month),
+                 "value": float(r.value)}
+                for r in self.by_cell_month.itertuples(index=False)
+            ],
+            "by_cell": {str(k): float(v) for k, v in self.by_cell.items()},
+            "by_month": {str(int(k)): float(v) for k, v in self.by_month.items()},
+            "city_median": float(self.city_median),
+        }
+
+    @staticmethod
+    def from_dict(payload: dict) -> "Climatology":
+        table = pd.DataFrame(payload["by_cell_month"],
+                             columns=["cell_id", "month", "value"])
+        table["month"] = table["month"].astype(int)
+        table["value"] = table["value"].astype(float)
+        by_cell = pd.Series(
+            {k: float(v) for k, v in payload["by_cell"].items()}, dtype=float)
+        by_month = pd.Series(
+            {int(k): float(v) for k, v in payload["by_month"].items()},
+            dtype=float)
+        by_month.index = by_month.index.astype(int)
+        return Climatology(by_cell_month=table, by_cell=by_cell,
+                           by_month=by_month,
+                           city_median=float(payload["city_median"]))
+
 
 # ---------------------------------------------------------------------------
 # 2. Daily city mean

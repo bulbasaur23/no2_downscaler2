@@ -24,7 +24,8 @@ are the real EE functions.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import date as _date, timedelta
 from pathlib import Path
 from typing import Callable
@@ -33,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from no2map.artifact import ModelArtifact, load_model_artifact
+from no2map.cache import CellCache, cell_key
 from no2map.features import FEATURE_SCHEMA_VERSION, TARGET, build_features
 from no2map.grid import cell_from_row_col, parse_cell_id
 from no2map.polygon import (
@@ -131,6 +133,40 @@ def load_latest_artifact(runs_dir: str | Path, city: str) -> tuple[ModelArtifact
     return art, run_dir.name
 
 
+def load_g3_summary(exports_dir: str | Path, city: str) -> dict | None:
+    """Compact G3 evidence for the app (G3 returned `honest_report`).
+
+    The plan's fallback for a model that does not beat climatology is to keep
+    serving, but label estimates as climatology-anchored and report the skill
+    as it stands. The app therefore shows this block verbatim; a missing
+    report is reported as missing rather than quietly omitted.
+    """
+    p = Path(exports_dir) / f"g3_report_{city}.json"
+    if not p.exists():
+        return None
+    rep = json.loads(p.read_text(encoding="utf-8"))
+    b = rep.get("blocked", {}).get("seed_delta", {})
+    c = rep.get("chronological", {}).get("seed_delta", {})
+    verdict = rep.get("verdict", {})
+    return {
+        "g3_mode": verdict.get("g3_mode"),
+        "generated_at": rep.get("generated_at"),
+        "blocked": {
+            "model_minus_climatology_rmse": b.get("delta_mean"),
+            "delta_sd": b.get("delta_sd"),
+            "beats_beyond_noise": verdict.get("beats_blocked_beyond_noise"),
+        },
+        "chronological": {
+            "model_minus_climatology_rmse": c.get("delta_mean"),
+            "delta_sd": c.get("delta_sd"),
+            "beats_beyond_noise": verdict.get("beats_chronological_beyond_noise"),
+        },
+        "required_actions": verdict.get("required_actions", []),
+        "note": verdict.get("note"),
+        "report_path": str(p),
+    }
+
+
 @dataclass
 class LivePredictor:
     city: str
@@ -139,9 +175,12 @@ class LivePredictor:
     statics: pd.DataFrame
     run_name: str = ""
     main_threshold: float = 0.5
+    cache: CellCache | None = None
+    g3: dict | None = None
     no2_fn: Callable = _ee_no2
     weather_fn: Callable = _ee_weather
     version_fn: Callable = _ee_versions
+    _versions_memo: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         # the default EE fetcher applies the D2 observed threshold client-side
@@ -150,12 +189,60 @@ class LivePredictor:
         if self.no2_fn is _ee_no2:
             _ee_no2.threshold = self.main_threshold
 
+    def _versions(self, date: str) -> list[str]:
+        """Processor versions for the date's month, memoized per process:
+        an EE aggregate call per request would dominate the quota, and the
+        value cannot change for a past month."""
+        month = date[:7]
+        if month not in self._versions_memo:
+            self._versions_memo[month] = list(self.version_fn(self.city_cfg, date))
+        return self._versions_memo[month]
+
+    def _cache_keys(self, date: str, versions: list[str],
+                    cell_ids: list[str]) -> dict[str, str]:
+        if self.cache is None:
+            return {}
+        pv = ",".join(sorted(str(v) for v in versions))
+        fv = self.artifact.feature_schema_version
+        return {cid: cell_key(cid, date, fv, pv, self.run_name)
+                for cid in cell_ids}
+
     def compute(self, polygon: list[tuple[float, float]], date: str) -> dict:
         info = validate_polygon(polygon)
         overlaps = cells_for_polygon(polygon)
         cell_ids = sorted(overlaps)
         window = polygon_bbox_buffered(polygon)
+        versions = self._versions(date)
 
+        keys = self._cache_keys(date, versions, cell_ids)
+        if keys:
+            hits = self.cache.get_many(list(keys.values()))
+            if len(hits) == len(cell_ids):
+                # full hit: no Earth Engine work at all
+                rows = [hits[keys[cid]] for cid in cell_ids]
+                return self._response(info, overlaps, window, date, versions,
+                                      rows, cache_hit=True)
+
+        df = self.assemble(date, cell_ids)
+        rows = self._rows(df, overlaps)
+
+        if keys:
+            pv = ",".join(sorted(str(v) for v in versions))
+            fv = self.artifact.feature_schema_version
+            self.cache.put_many([
+                (keys[r["cell_id"]], r["cell_id"], date, fv, pv,
+                 self.run_name, r) for r in rows])
+        return self._response(info, overlaps, window, date, versions,
+                              rows, cache_hit=False)
+
+    def assemble(self, date: str, cell_ids: list[str]) -> pd.DataFrame:
+        """Request frame for these cells/dates: NO2 state + weather/lags +
+        statics, merged on (cell_id, date).
+
+        Public because it is the G4 parity hook: feeding it the same raw
+        values that training consumed must produce the same feature frame.
+        It calls the shared acquisition/weather fetchers and never derives a
+        feature itself - `artifact.predict` applies `build_features` once."""
         no2_rows = self.no2_fn(self.city_cfg, date, cell_ids)
         weather_rows = self.weather_fn(self.city_cfg, date, cell_ids)
 
@@ -194,19 +281,33 @@ class LivePredictor:
         preds = self.artifact.predict(df)
         df["pred"] = preds["pred"].to_numpy()
         df["margin"] = preds["margin"].to_numpy()
+        # G3 was reported honestly: the climatology anchor rides along so the
+        # UI can show "model estimate" beside "what this cell usually is".
+        df["climatology"] = preds["climatology"].to_numpy()
 
-        weights = np.array([overlaps[c] for c in df["cell_id"]], dtype=float)
-        total_w = float(weights.sum())
         observed = df["state"].to_numpy() == OBSERVED
         df["value"] = np.where(observed, df[TARGET].to_numpy(dtype=float),
                                df["pred"].to_numpy(dtype=float))
         df["source"] = np.where(observed, "observed", "reconstructed")
+        return df
 
+    def _response(self, info: dict, overlaps: dict[str, float], window: dict,
+                  date: str, versions: list[str], rows: list[dict],
+                  cache_hit: bool) -> dict:
+        weights = np.array([float(overlaps[r["cell_id"]]) for r in rows],
+                           dtype=float)
         warnings = list(info["warnings"])
-        w = resolution_warning(len(cell_ids), float(weights.min()) if len(weights) else 0.0)
+        w = resolution_warning(len(rows),
+                               float(weights.min()) if len(weights) else 0.0)
         if w:
             warnings.append(w)
-
+        months = self.artifact.meta.get("months") or []
+        if date[:7] in months:
+            warnings.append(
+                "requested date falls inside the model's training window: "
+                "reconstructed values are in-sample and likely optimistic; "
+                "use observed cells and the climatology anchor as the "
+                "trustworthy reading")
         return {
             "city": self.city,
             "date": date,
@@ -218,19 +319,32 @@ class LivePredictor:
                       "feature_schema_version": self.artifact.feature_schema_version,
                       "alpha": self.artifact.alpha,
                       "groups": self.artifact.groups},
-            "data": {"processor_versions": self.version_fn(self.city_cfg, date),
+            "data": {"processor_versions": list(versions),
                      "no2_source": "COPERNICUS/S5P/OFFL/L3_NO2"},
-            "summary": self._summary(df, weights, total_w),
+            "summary": self._summary(rows, weights),
             "warnings": warnings,
-            "cells": self._cells(df, overlaps),
+            "cache_hit": cache_hit,
+            # G3 evidence (honest report), so the UI never presents a
+            # climatology-anchored estimate as validated skill
+            "g3": self.g3,
+            "climatology_anchor": {"available":
+                                   self.artifact.climatology is not None,
+                                   "definition":
+                                   "median observed value per (cell, month) "
+                                   "over the training window"},
+            "cells": rows,
         }
 
     @staticmethod
-    def _summary(df: pd.DataFrame, weights: np.ndarray, total_w: float) -> dict:
-        obs = df["state"].to_numpy() == OBSERVED
-        val = df["value"].to_numpy(dtype=float)
-        pred = df["pred"].to_numpy(dtype=float)
-        margin = df["margin"].to_numpy(dtype=float)
+    def _summary(rows: list[dict], weights: np.ndarray) -> dict:
+        def _arr(key: str) -> np.ndarray:
+            return np.array([np.nan if r.get(key) is None else float(r[key])
+                             for r in rows], dtype=float)
+
+        total_w = float(weights.sum())
+        obs = np.array([r["state"] == OBSERVED for r in rows])
+        val, pred, margin = _arr("value"), _arr("pred"), _arr("margin")
+        clim = _arr("climatology")
         ok = np.isfinite(val)
 
         def _wmean(x: np.ndarray, m: np.ndarray) -> float | None:
@@ -239,7 +353,7 @@ class LivePredictor:
             return float(np.sum(weights[m] * x[m]) / np.sum(weights[m]))
 
         return {
-            "n_cells": int(len(df)),
+            "n_cells": int(len(rows)),
             "total_weight": total_w,
             "observed_fraction": (float(weights[obs].sum() / total_w)
                                   if total_w > 0 else 0.0),
@@ -248,17 +362,19 @@ class LivePredictor:
             "weighted_mean": _wmean(val, ok),
             "weighted_mean_observed": _wmean(val, obs & ok),
             "weighted_mean_predicted": _wmean(pred, np.isfinite(pred)),
+            "weighted_mean_climatology": _wmean(clim, np.isfinite(clim)),
             "weighted_mean_margin": _wmean(margin, np.isfinite(margin)),
         }
 
     @staticmethod
-    def _cells(df: pd.DataFrame, overlaps: dict[str, float]) -> list[dict]:
+    def _rows(df: pd.DataFrame, overlaps: dict[str, float]) -> list[dict]:
         out = []
         for r in df.sort_values("cell_id").itertuples(index=False):
             row, col = parse_cell_id(r.cell_id)
             c = cell_from_row_col(row, col)
             margin = float(r.margin)
             pred = float(r.pred)
+            clim = float(r.climatology) if pd.notna(r.climatology) else float("nan")
             val = r.value if r.value is not None else float("nan")
             out.append({
                 "cell_id": r.cell_id,
@@ -268,11 +384,14 @@ class LivePredictor:
                 "state": r.state,
                 "reason_code": None if pd.isna(r.reason_code) else r.reason_code,
                 "source": r.source,
+                "valid_fraction": (round(float(r.n_valid_fraction), 4)
+                                   if pd.notna(r.n_valid_fraction) else None),
                 "value": None if not np.isfinite(val) else round(val, 4),
                 "value_observed": (round(float(r.value_umol_m2), 4)
                                    if r.state == OBSERVED
                                    and pd.notna(r.value_umol_m2) else None),
                 "pred": round(pred, 4) if np.isfinite(pred) else None,
+                "climatology": round(clim, 4) if np.isfinite(clim) else None,
                 "margin": round(margin, 4) if np.isfinite(margin) else None,
                 "interval_lo": (round(pred - margin, 4)
                                 if np.isfinite(pred) and np.isfinite(margin) else None),

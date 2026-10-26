@@ -25,6 +25,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from no2map.artifact import save_model_artifact        # noqa: E402
+from no2map.baselines import Climatology               # noqa: E402
 from no2map.conformal import SplitConformal            # noqa: E402
 from no2map.dataset import load_training_panel         # noqa: E402
 from no2map.features import (TARGET, build_features,  # noqa: E402
@@ -104,12 +105,18 @@ def main() -> int:
     final_model = XGBConfig().make(args.seed)
     final_model.fit(final_rows[fe_cols], final_rows[TARGET])
     conf = SplitConformal(alpha=args.alpha, key_fn=season_key).fit(oof)
+    # G3 returned `honest_report`, so the served bundle carries the
+    # climatology anchor: per-cell monthly median fitted on the same training
+    # rows the model saw. The app shows it beside every reconstruction.
+    climatology = Climatology().fit(final_rows)
     save_model_artifact(
         run_dir, final_model, conf, fe_cols, groups,
         meta={"city": args.city, "months": panel.attrs["months"],
               "block_m": args.block_m, "buffer_m": args.buffer_m,
-              "protocol": advice, "ran_at": report["config"]["ran_at"]})
-    print(f"[train] artifact saved (model + conformal + {len(fe_cols)} fe cols)")
+              "protocol": advice, "ran_at": report["config"]["ran_at"]},
+        climatology=climatology)
+    print(f"[train] artifact saved (model + conformal + climatology + "
+          f"{len(fe_cols)} fe cols)")
 
     # chronological co-report: the plan requires BOTH protocols for G3, so the
     # claim cannot rest on whichever split happens to look better. Everything
