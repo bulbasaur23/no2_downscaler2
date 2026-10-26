@@ -100,13 +100,24 @@ async function init() {
   $("date").value = availability.latest_date;
   $("asof").textContent = `Data as of ${availability.latest_date} (sources lag ${availability.date_cap_lag_days} days) · ${availability.grid_cell_deg}° grid`;
 
-  for (const c of availability.cities) $("city").add(new Option(c, c));
+  for (const c of availability.cities) {
+    const has = (availability.serving || []).includes(c);
+    const o = new Option(has ? c : c + " (no model)", c);
+    o.disabled = !has;
+    $("city").add(o);
+  }
+  const firstServed = availability.cities.find(
+    (c) => (availability.serving || []).includes(c));
+  if (firstServed) $("city").value = firstServed;
 
   try {
     const demo = await (await fetch("/api/demo/regions")).json();
     for (const r of demo.regions) {
       const b = document.createElement("button");
+      const has = (availability.serving || []).includes(r.city);
       b.textContent = "Demo: " + r.name;
+      b.disabled = !has;
+      b.title = has ? "" : `no trained model for ${r.city} yet`;
       b.onclick = () => { $("city").value = r.city; drawPolygon(r.polygon); };
       $("demo").appendChild(b);
     }

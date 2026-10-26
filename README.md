@@ -233,7 +233,9 @@ no Earth Engine work. Predictions on dates inside the training window are flagge
 
 The per-IP rate limiter counts `remote_addr` by default, so `X-Forwarded-For` cannot be spoofed to
 get a fresh bucket. Only behind a reverse proxy that sets that header, start the service with
-`$env:NO2MAP_TRUST_PROXY = "1"` first.
+`$env:NO2MAP_TRUST_PROXY = "1"` first. The city dropdown lists the configured study areas but
+disables any city with no trained artifact (marked "no model"), so a demo button never launches a
+job the server cannot complete.
 
 ## Limits (stated, per plan §7 and the risk register)
 

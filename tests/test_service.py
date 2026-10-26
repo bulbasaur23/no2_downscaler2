@@ -271,6 +271,17 @@ class TestAvailability:
                                        "date": "2024-07-01"})
         assert ok.status_code == 200
 
+    def test_serving_lists_only_cities_with_an_artifact(self, tmp_path):
+        from tests.test_live import build_test_artifact
+
+        runs = tmp_path / "runs"
+        build_test_artifact(runs)  # delhi_ncr only
+        c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=runs,
+                                  use_live=False))
+        body = c.get("/api/availability").json()
+        assert "delhi_ncr" in body["cities"]      # configured
+        assert body["serving"] == ["delhi_ncr"]   # but only one serves
+
 
 class TestRateLimit:
     def test_sixsixth_request_429(self, client):

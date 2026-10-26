@@ -78,6 +78,22 @@ def configured_cities(config_path: str | Path) -> list[str]:
 
 
 
+def serving_cities(runs_dir: str | Path, cities: list[str]) -> list[str]:
+    """Configured cities with a complete serving artifact on disk.
+
+    The dropdown must not offer a city whose every job would fail, and a demo
+    button must not promise a map the server cannot make. Checked per request
+    so a freshly trained artifact appears without restarting the service.
+    """
+    root = Path(runs_dir)
+    out = []
+    for city in cities:
+        if any((d / "artifact.json").exists() and (d / "model.json").exists()
+               for d in root.glob(f"{city}_modelA_*")):
+            out.append(city)
+    return out
+
+
 def stub_compute(request: dict) -> dict:
     """Geometric-only preview, used when no trained artifact is available.
 
@@ -281,7 +297,8 @@ def create_app(
         return {"latest_date": latest_available_date(),
                 "date_cap_lag_days": DATE_CAP_LAG_DAYS,
                 "grid_cell_deg": GRID_CELL_DEG,
-                "cities": list(city_keys)}
+                "cities": list(city_keys),
+                "serving": serving_cities(runs_dir, city_keys)}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
