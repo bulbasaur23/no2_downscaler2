@@ -311,6 +311,12 @@ class LivePredictor:
                 "reconstructed values are in-sample and likely optimistic; "
                 "use observed cells and the climatology anchor as the "
                 "trustworthy reading")
+        summary = self._summary(rows, weights)
+        if summary["observed_fraction"] == 0.0:
+            warnings.append(
+                "no valid TROPOMI retrieval covers this polygon on this date: "
+                "every cell shown is model output (reconstructed), not an "
+                "observation")
         return {
             "city": self.city,
             "date": date,
@@ -324,7 +330,7 @@ class LivePredictor:
                       "groups": self.artifact.groups},
             "data": {"processor_versions": list(versions),
                      "no2_source": "COPERNICUS/S5P/OFFL/L3_NO2"},
-            "summary": self._summary(rows, weights),
+            "summary": summary,
             "warnings": warnings,
             "cache_hit": cache_hit,
             # G3 evidence (honest report), so the UI never presents a

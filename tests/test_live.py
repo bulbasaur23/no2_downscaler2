@@ -278,6 +278,25 @@ class TestParity:
         pd.testing.assert_frame_equal(a, b, check_dtype=False)
 
 
+class TestNoObservationDay:
+    def test_all_reconstructed_day_is_flagged(self, runs_dir, statics):
+        # a genuine no-overpass day returns no observed cells: the response
+        # must say the whole map is model output, not let it read as data
+        states = {cid: ("no_overpass", None) for cid in CELL_IDS}
+        p = make_predictor(runs_dir, statics, states)
+        out = p.compute(POLY, "2024-07-01")
+        assert out["summary"]["observed_fraction"] == 0.0
+        assert all(c["source"] == "reconstructed" for c in out["cells"])
+        assert any("every cell shown is model output" in w
+                   for w in out["warnings"])
+
+    def test_mostly_observed_day_is_not_flagged(self, predictor):
+        out = predictor.compute(POLY, "2024-07-01")
+        assert out["summary"]["observed_fraction"] > 0.0
+        assert not any("every cell shown is model output" in w
+                       for w in out["warnings"])
+
+
 class TestClimatologyAnchor:
     """G3 returned `honest_report`: reconstructions must be shown beside the
     per-cell climatology they are anchored to, never alone."""
