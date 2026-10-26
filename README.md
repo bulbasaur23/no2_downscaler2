@@ -30,7 +30,7 @@ and **honest validation**.
 | **G0** feasibility | PASS | `docs/feasibility.md`, Stage-0 reports in `data/stage0/` |
 | **G1** Delhi complete | **PASS** | 30 exported months 2023-04 → 2025-09, 0 failures, 0 warnings — `data/exports/g1_report_delhi_ncr.json` |
 | **G2** baselines + block size | **PASS (advice)** | residual variogram range **59.5 km**, sill 632.4 → block **89,278 m** with a 30,000 m buffer is feasible; 119 km impractical — `data/exports/g2_variogram_delhi_ncr.json` |
-| **G3** Model A checkpoint | **PASS as `honest_report`** | see below — `data/exports/g3_report_delhi_ncr.json` |
+| **G3** Model A checkpoint | **PASS as `honest_report`** (Delhi) / **PASS `both_splits`** (Bengaluru) | Delhi: +2.03 vs climatology blocked, −1.58 chron; Bengaluru: **−2.57 blocked** (SD 0.07, beyond noise), −1.12 chron — see below; `g3_report_delhi_ncr.json`, `g3_report_bengaluru.json` |
 | **G4** live polygon app | **PASS** | real-data parity 12/12 cells, **max feature/prediction diff 0.0** (`data/exports/g4_parity_delhi_ncr.json`); a real HTTP job on 2025-11-25 returned observed cells + climatology anchor + G3 note, and CSV export returned 200 with the state column |
 | **D3** version-shift test | **run, honest result** | Model A still beats climatology in both post-update months, but its bias swings +10.6 → −11.3 µmol/m² — see below; `data/shift/delhi_ncr_version_shift.json` |
 | **G5** multi-city transfer | **in progress** | Bengaluru export running; Kolkata/Hyderabad exports queued; `scripts/pipeline/transfer_g5.py` implements leave-one-city-out + OOD evidence and refuses a partial training window |
@@ -83,6 +83,24 @@ across the update without saying so.
 Caveat on precision: the 2025-11 column rests on **8 days only**, so its level correlation (8
 points) and bias are indicative rather than precise; 2025-12 (31 days) is the stronger half of the
 evidence.
+
+### Per-city G3, and why the protocols differ
+
+Delhi and Bengaluru were validated with **each city's own** G2 block advice, not one copy-pasted
+number: Delhi's residual range is 59.5 km (block 89,278 m, 30 km gap); Bengaluru's is 12.9 km
+(block 19,357 m, 15 km gap). The plan's folding guard correctly refused Delhi's 30 km gap at
+Bengaluru's 60 km scale — the gap must exceed the city's variogram range while leaving enough
+training cells in the 156-cell folds, which is exactly what the measured protocol does.
+
+| City | Blocked (unseen areas) | Chronological (future) | Verdict |
+|---|---|---|---|
+| Delhi NCR | 38.5 vs climatology 36.45 (**+2.03 worse**) | 31.9 vs 33.5 (−1.6 better) | `honest_report` |
+| Bengaluru | 16.83 vs climatology 19.41 (**−2.57 better**, SD 0.07) | 12.22 vs 13.36 (−1.12 better) | `both_splits` |
+
+Bengaluru's static-only baseline is 21.21 vs the full model's 16.83 — weather/temporal features are
+worth ~4.4 µmol/m² there, and Bengaluru's model beats the climatology anchor on genuinely unseen
+blocks, which Delhi's does not. Each verdict is served verbatim in the app (the G3 banner is
+per city; the serving artifact is likewise per city and per protocol).
 
 ### Known blockers
 
