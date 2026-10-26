@@ -147,6 +147,27 @@ class TestTransferReport:
         with pytest.raises(KeyError, match="not in panels"):
             transfer_report({"alpha": _city()}, GROUPS, test_cities=["beta"])
 
+    def test_unseen_city_reports_climatology_fallback(self):
+        # a truly unseen city has no (cell, month) history, so the climatology
+        # reference must fall back to the pooled month/city median; the report
+        # has to say so instead of implying a per-cell anchor comparison
+        city = _city(seed=4).copy()
+        city["cell_id"] = "x" + city["cell_id"]
+        rep = transfer_report({"alpha": _city(seed=3), "beta": city}, GROUPS,
+                              test_cities=["beta"], seed=1)
+        ctx = rep["folds"]["beta"]["baseline_context"]
+        assert ctx["climatology_fallback_rate"] == pytest.approx(1.0)
+        assert ctx["climatology_has_cell_history"] is False
+        assert "pooled" in ctx["note"]
+
+    def test_shared_cells_report_full_climatology_history(self):
+        rep = transfer_report({"alpha": _city(seed=3),
+                               "beta": _city(seed=4)}, GROUPS,
+                              test_cities=["beta"], seed=1)
+        ctx = rep["folds"]["beta"]["baseline_context"]
+        assert ctx["climatology_fallback_rate"] == pytest.approx(0.0)
+        assert ctx["climatology_has_cell_history"] is True
+
     def test_single_city_cannot_train_itself(self):
         with pytest.raises(ValueError, match="no other city"):
             transfer_report({"alpha": _city()}, GROUPS, test_cities=["alpha"])

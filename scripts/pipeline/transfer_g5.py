@@ -143,6 +143,10 @@ def main() -> int:
               f"rmse_flagged={_fmt(o['rmse_flagged'])} "
               f"rmse_unflagged={_fmt(o['rmse_unflagged'])} "
               f"flag_higher_error={o['flagged_higher_error']}")
+        bc = f["baseline_context"]
+        print(f"    climatology fallback rate={_fmt(bc['climatology_fallback_rate'], '.3f')} "
+              f"(cell history: {bc['climatology_has_cell_history']}) - "
+              "unseen cells fall back to the pooled median")
         if o["flagged_higher_error"] is False:
             print("    NOTE: the OOD flag does NOT separate higher-error cells "
                   "here; report that, do not tune the flag")

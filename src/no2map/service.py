@@ -19,8 +19,10 @@ limiting) - limits are constructor injected so tests can shrink them.
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import json
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -51,6 +53,29 @@ DEMO_REGIONS = {
                   "polygon": [[78.25, 17.30], [78.60, 17.30],
                               [78.60, 17.60], [78.25, 17.60]]},
 }
+
+# Only used when the config cannot be read (an unusual failure that must not
+# take the API down). The config's study_areas are authoritative.
+FALLBACK_CITIES = ["delhi_ncr", "bengaluru", "kolkata", "hyderabad"]
+
+
+def configured_cities(config_path: str | Path) -> list[str]:
+    """Study-area keys from the config: the only cities a job may name.
+
+    The availability endpoint and the job validator share this list so the
+    dropdown can never offer a city the server does not know, and a request
+    cannot smuggle an arbitrary string into the result (it also ends up in the
+    CSV filename).
+    """
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+        keys = [str(k) for k in (cfg.get("study_areas") or {})]
+        return keys or list(FALLBACK_CITIES)
+    except (OSError, ValueError):
+        return list(FALLBACK_CITIES)
+
 
 
 def stub_compute(request: dict) -> dict:
@@ -156,15 +181,26 @@ def create_app(
     exports_dir: str | Path = ROOT / "data" / "exports",
     config_path: str | Path = ROOT / "configs" / "default.yaml",
     use_live: bool = True,
+    trust_proxy: bool | None = None,
 ) -> FastAPI:
     """API factory. `use_live=True` (default) serves real predictions; tests
     inject `compute_fn` (or pass use_live=False) to exercise the flow without
-    Earth Engine or a trained artifact."""
+    Earth Engine or a trained artifact.
+
+    `trust_proxy` must stay False unless a reverse proxy really sets
+    X-Forwarded-For: otherwise any client can spoof the header and get a fresh
+    rate-limit bucket per request. `None` reads `NO2MAP_TRUST_PROXY` so the
+    documented uvicorn factory command can enable it without code changes.
+    """
+    if trust_proxy is None:
+        trust_proxy = os.environ.get("NO2MAP_TRUST_PROXY", "").lower() in {
+            "1", "true", "yes"}
     if compute_fn is None:
         compute_fn = (live_compute_factory(config_path, exports_dir, runs_dir)
                       if use_live else stub_compute)
     app = FastAPI(title="NO2 mapping platform", version="0.1.0")
     store = JobStore(store_dir)
+    city_keys = configured_cities(config_path)
 
     # ---- per-IP sliding-window rate limiter ------------------------------
     hits: dict[str, deque[float]] = defaultdict(deque)
@@ -179,12 +215,21 @@ def create_app(
             if len(q) >= rate_limit_per_min:
                 return False
             q.append(now)
+            # bound the map: an attacker cycling source addresses must not be
+            # able to grow it without limit
+            if len(hits) > 10_000:
+                stale = [k for k, v in hits.items()
+                         if not v or now - v[-1] > 60.0]
+                for k in stale:
+                    del hits[k]
             return True
 
     def _client_ip(req: Request) -> str:
-        fwd = req.headers.get("x-forwarded-for")
-        return (fwd.split(",")[0].strip() if fwd else
-                req.client.host if req.client else "anon")
+        if trust_proxy:
+            fwd = req.headers.get("x-forwarded-for")
+            if fwd:
+                return fwd.split(",")[0].strip()
+        return req.client.host if req.client else "anon"
 
     # ---- endpoints --------------------------------------------------------
 
@@ -212,8 +257,17 @@ def create_app(
             validate_polygon([tuple(p) for p in polygon])
         except ValueError as e:
             raise HTTPException(400, f"invalid polygon: {e}") from e
+        if city not in city_keys:
+            raise HTTPException(
+                400, f"unknown city {city!r}; configured study areas are "
+                     f"{city_keys}")
+        try:
+            date = dt.date.fromisoformat(str(date)).isoformat()
+        except ValueError as e:
+            raise HTTPException(
+                400, f"date {date!r} is not an ISO date (YYYY-MM-DD)") from e
         cap = latest_available_date()
-        if str(date) > cap:
+        if date > cap:
             raise HTTPException(
                 400, f"date {date} is beyond the availability cap {cap} "
                      f"(D4: sources lag {DATE_CAP_LAG_DAYS} days)")
@@ -227,7 +281,7 @@ def create_app(
         return {"latest_date": latest_available_date(),
                 "date_cap_lag_days": DATE_CAP_LAG_DAYS,
                 "grid_cell_deg": GRID_CELL_DEG,
-                "cities": ["delhi_ncr", "bengaluru", "kolkata", "hyderabad"]}
+                "cities": list(city_keys)}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):

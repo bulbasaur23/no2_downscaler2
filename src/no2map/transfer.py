@@ -256,7 +256,34 @@ def transfer_report(
             "n_train_rows": int(len(train)),
             "n_eval_rows": int(len(frame)),
             "scores": scores,
+            "baseline_context": _baseline_context(
+                fitted["final"]["pred_climatology"], preds),
             "ood": {"reference": ref.to_dict(),
                     **ood_evidence(preds, "pred_model_a")},
         }
     return out
+
+
+def _baseline_context(climatology, preds: pd.DataFrame) -> dict:
+    """What the reference methods actually had to work with in this fold.
+
+    The held-out city's cells are unseen by the training fit, so
+    `pred_climatology` falls back down its ladder (cell-month -> cell ->
+    pooled month -> pooled city median) instead of using per-cell history.
+    Reporting the fallback rate keeps the comparison honest: beating
+    climatology in a transfer fold is not the same claim as beating the
+    per-cell anchor inside one city (G3).
+    """
+    rate = None
+    try:
+        rate = float(climatology.fallback_rate(preds))
+    except (RuntimeError, KeyError, ValueError):
+        rate = None  # an unfitted/degenerate reference: report nothing
+    return {
+        "climatology_fallback_rate": rate,
+        "climatology_has_cell_history": bool(rate is not None and rate == 0.0),
+        "note": ("held-out cells have no (cell, month) history, so the "
+                 "climatology reference falls back to the pooled month/city "
+                 "median; treat it as a transfer baseline, not the per-cell "
+                 "anchor scored in G3"),
+    }

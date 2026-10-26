@@ -231,6 +231,10 @@ export of the exact cells returned. Results are cached per cell on
 (cell, date, feature schema, processor version, model version), so re-querying the same date costs
 no Earth Engine work. Predictions on dates inside the training window are flagged in-sample.
 
+The per-IP rate limiter counts `remote_addr` by default, so `X-Forwarded-For` cannot be spoofed to
+get a fresh bucket. Only behind a reverse proxy that sets that header, start the service with
+`$env:NO2MAP_TRUST_PROXY = "1"` first.
+
 ## Limits (stated, per plan §7 and the risk register)
 
 - Retrieval bias: aerosols/haze can be misread as cloud; winter-haze gaps are seasonal.

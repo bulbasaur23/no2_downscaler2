@@ -69,7 +69,7 @@ class TestJobFlow:
             return {"ok": True}
         c = TestClient(create_app(store_dir=tmp_path / "j",
                                   runs_dir=tmp_path / "r", compute_fn=slow))
-        jid = c.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
+        jid = c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
                                         "date": "2024-07-01"}).json()["id"]
         r = c.get(f"/api/results/{jid}")
         # TestClient blocks BackgroundTasks until response sent; reject may
@@ -100,13 +100,25 @@ class TestValidation:
                                            "date": "2024-07-01"})
         assert r.status_code == 400 and "India" in r.json()["detail"]
 
+    def test_unknown_city_400(self, client):
+        r = client.post("/api/jobs", json={"city": "atlantis", "polygon": SQUARE,
+                                           "date": "2024-07-01"})
+        assert r.status_code == 400 and "unknown city" in r.json()["detail"]
+
+    def test_malformed_date_400(self, client):
+        for bad in ("not-a-date", "2024-02-30", "2024-7-1"):
+            r = client.post("/api/jobs", json={"city": "delhi_ncr",
+                                               "polygon": SQUARE, "date": bad})
+            assert r.status_code == 400, bad
+            assert "ISO date" in r.json()["detail"], bad
+
     def test_compute_failure_marks_job_failed(self, tmp_path):
         def boom(req):
             raise RuntimeError("EE exploded")
         c = TestClient(create_app(store_dir=tmp_path / "j",
                                   runs_dir=tmp_path / "r", compute_fn=boom,
                                   use_live=False))
-        jid = c.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
+        jid = c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
                                         "date": "2024-07-01"}).json()["id"]
         g = c.get(f"/api/jobs/{jid}").json()
         assert g["status"] == "failed" and "EE exploded" in g["error"]
@@ -148,7 +160,7 @@ class TestResultsExport:
             raise RuntimeError("nope")
         c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=tmp_path / "r",
                                   compute_fn=boom, use_live=False))
-        jid = c.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
+        jid = c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
                                         "date": "2024-07-01"}).json()["id"]
         assert c.get(f"/api/results/{jid}/export.csv").status_code == 409
         assert c.get("/api/results/nope/export.csv").status_code == 404
@@ -247,19 +259,67 @@ class TestAvailability:
                                            "date": "2024-07-01"})
         assert r.status_code == 200
 
+    def test_city_list_comes_from_config(self, tmp_path):
+        # the dropdown must follow study_areas, not a second hard-coded list
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("study_areas:\n  only_city: {}\n", encoding="utf-8")
+        c = TestClient(create_app(store_dir=tmp_path / "j",
+                                  runs_dir=tmp_path / "r",
+                                  use_live=False, config_path=cfg))
+        assert c.get("/api/availability").json()["cities"] == ["only_city"]
+        ok = c.post("/api/jobs", json={"city": "only_city", "polygon": SQUARE,
+                                       "date": "2024-07-01"})
+        assert ok.status_code == 200
+
 
 class TestRateLimit:
     def test_sixsixth_request_429(self, client):
         last = None
         for i in range(6):
-            last = client.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
+            last = client.post("/api/jobs", json={"city": "delhi_ncr",
+                                                  "polygon": SQUARE,
                                                   "date": "2024-07-01"})
         assert last.status_code == 429
-        # a different IP is a different bucket
-        r = client.post("/api/jobs", json={"city": "x", "polygon": SQUARE,
-                                           "date": "2024-07-01"},
-                        headers={"x-forwarded-for": "other-ip"})
-        assert r.status_code == 200
+
+    def test_forwarded_for_is_ignored_unless_proxy_trusted(self, client):
+        # spoofing X-Forwarded-For must not buy a fresh bucket by default
+        last = None
+        for i in range(6):
+            last = client.post("/api/jobs", json={"city": "delhi_ncr",
+                                                  "polygon": SQUARE,
+                                                  "date": "2024-07-01"},
+                               headers={"x-forwarded-for": f"spoofed-{i}"})
+        assert last.status_code == 429
+
+    def test_proxy_mode_uses_forwarded_for(self, tmp_path):
+        c = TestClient(create_app(store_dir=tmp_path / "j",
+                                  runs_dir=tmp_path / "r",
+                                  rate_limit_per_min=2, use_live=False,
+                                  trust_proxy=True))
+        for i in range(2):
+            assert c.post("/api/jobs", json={"city": "delhi_ncr",
+                                             "polygon": SQUARE,
+                                             "date": "2024-07-01"},
+                          headers={"x-forwarded-for": "1.1.1.1"}).status_code == 200
+        assert c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                         "date": "2024-07-01"},
+                      headers={"x-forwarded-for": "1.1.1.1"}).status_code == 429
+        # a genuinely different client behind the real proxy is separate
+        assert c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                         "date": "2024-07-01"},
+                      headers={"x-forwarded-for": "2.2.2.2"}).status_code == 200
+
+    def test_env_var_enables_proxy_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("NO2MAP_TRUST_PROXY", "true")
+        c = TestClient(create_app(store_dir=tmp_path / "j",
+                                  runs_dir=tmp_path / "r",
+                                  rate_limit_per_min=1, use_live=False))
+        assert c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                         "date": "2024-07-01"},
+                      headers={"x-forwarded-for": "3.3.3.3"}).status_code == 200
+        assert c.post("/api/jobs", json={"city": "delhi_ncr", "polygon": SQUARE,
+                                         "date": "2024-07-01"},
+                      headers={"x-forwarded-for": "4.4.4.4"}).status_code == 200
 
 
 class TestModels:
