@@ -97,6 +97,31 @@ class TestFrozenScoring:
         assert 0.5 <= s["coverage"] <= 1.0
 
 
+class TestVersionPurity:
+    """A month touched by two processors is scored but never pure (honesty)."""
+
+    def test_version_pure_month_is_flagged_pure(self):
+        rep = version_shift_report(
+            _synthetic_panel(), {"2025-11": _eval_frame()}, TRAIN_VERSIONS,
+            {"2025-11": ["02.09.01"]}, GROUPS, seed=1)
+        assert rep["eval_version_pure"] is True
+        assert rep["mixed_version_months"] == []
+        assert rep["per_month"]["2025-11"]["version_pure"] is True
+
+    def test_mixed_version_month_still_scored_but_flagged(self):
+        # real manifest case: 2025-12 rows span 02.09.01 and 03.00.DV
+        rep = version_shift_report(
+            _synthetic_panel(), {"2025-12": _eval_frame(months=("2025-12",))},
+            TRAIN_VERSIONS, {"2025-12": ["02.09.01", "03.00.DV"]}, GROUPS,
+            seed=1)
+        assert rep["eval_version_pure"] is False
+        assert rep["mixed_version_months"] == ["2025-12"]
+        month = rep["per_month"]["2025-12"]
+        assert month["version_pure"] is False
+        assert month["versions"] == ["02.09.01", "03.00.DV"]
+        assert "pred_model_a" in month["scores"]  # still measured, not dropped
+
+
 class TestFitPredict:
     def test_predict_frozen_columns_and_rows(self):
         fitted = fit_all(_synthetic_panel(), GROUPS, seed=1, alpha=0.1)

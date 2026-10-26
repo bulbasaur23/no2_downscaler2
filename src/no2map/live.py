@@ -1,7 +1,7 @@
 """Live polygon compute (Phase 4): EE fetch -> shared features -> artifact.
 
 The parity contract from the plan (risk 10) is structural here: the live path
-calls the SAME acquisition (`day_no2_cell_sums` -> `convert_day_rows`) and
+calls the SAME acquisition (`day_no2_cell_sums` -> `day_rows`) and
 weather (`day_weather_stack`, which itself builds the 24/48 h lags) functions
 that produced the training parquet, then the SAME feature module
 (`features.build_features`) and the SAME schema-pinned artifact. No feature is
@@ -75,14 +75,17 @@ def _cells_fc(cell_ids: list[str]):
 
 
 def _ee_no2(city_cfg: dict, date: str, cell_ids: list[str]) -> list[dict]:
-    from no2map.acquisition import (convert_day_rows, day_no2_cell_sums,
+    from no2map.acquisition import (day_no2_cell_sums, day_rows,
                                     no2_projection_scale)
 
     scale = _ee_no2.scale  # cached process-wide (one EE round trip)
     if scale is None:
         scale = _ee_no2.scale = no2_projection_scale()
     sums = day_no2_cell_sums(city_cfg, date, _cells_fc(cell_ids), scale)
-    return [{"date": date, **r} for r in convert_day_rows(sums, _ee_no2.threshold)]
+    # same row contract as the month exporter: an empty overpass day becomes
+    # `no_overpass` rows for every cell (D6), never an empty frame
+    return [{"date": date, **r} for r in day_rows(sums, cell_ids,
+                                                  _ee_no2.threshold)]
 
 
 _ee_no2.scale = None

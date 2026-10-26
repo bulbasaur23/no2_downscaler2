@@ -8,7 +8,9 @@ import pytest
 from no2map.acquisition import (
     MOL_TO_UMOL,
     cell_stats_from_sums,
+    day_rows,
     month_days,
+    no_overpass_rows,
     overpass_utc_hours,
 )
 
@@ -95,3 +97,49 @@ class TestCellStatsD2:
     def test_rejects_zero_total(self):
         with pytest.raises(ValueError):
             cell_stats_from_sums(1.0, 1.0, 1, 0, 1)
+
+
+class TestDayRows:
+    """One row per (cell, date) even when the date has no overpass (D6)."""
+
+    CELLS = ["7.0_76.0", "7.0_76.1", "7.1_76.0"]
+
+    def test_empty_day_becomes_no_overpass_rows_for_every_cell(self):
+        # regression: an empty overpass window used to return [] and then a
+        # bandless composite crashed the whole month export on .pow(2)
+        rows = day_rows([], self.CELLS, main_threshold=0.5)
+        assert [r["cell_id"] for r in rows] == self.CELLS
+        for r in rows:
+            assert r["state"] == "no_overpass"
+            assert r["reason_code"] == "no_overpass"
+            assert r["value_umol_m2"] is None
+            assert r["n_valid_fraction"] == 0.0
+            assert r["n_orbit_overlap"] == 0.0
+
+    def test_no_overpass_rows_helper_is_pure(self):
+        # called twice -> equal rows, no shared mutable state
+        a = no_overpass_rows(self.CELLS)
+        b = no_overpass_rows(self.CELLS)
+        assert a == b
+        a[0]["state"] = "mutated"
+        assert no_overpass_rows(self.CELLS)[0]["state"] == "no_overpass"
+
+    def test_non_empty_day_uses_d2_arithmetic_unchanged(self):
+        sums = [{
+            "cell_id": "7.0_76.0", "value_sum": 50e-5,
+            "value_sq_sum": (50e-5) ** 2 * 50, "valid_sum": 50.0,
+            "one_sum": 100.0, "orbit_count_sum": 50.0,
+        }]
+        rows = day_rows(sums, self.CELLS, main_threshold=0.5)
+        assert len(rows) == 1  # only cells the fetcher returned
+        assert rows[0]["state"] == "observed"
+        assert rows[0]["value_umol_m2"] == pytest.approx(10.0, rel=1e-3)
+
+    def test_day_rows_respects_threshold_argument(self):
+        sums = [{
+            "cell_id": "c", "value_sum": 30e-5,
+            "value_sq_sum": (30e-5) ** 2 * 30, "valid_sum": 30.0,
+            "one_sum": 100.0, "orbit_count_sum": 30.0,
+        }]
+        assert day_rows(sums, ["c"], main_threshold=0.5)[0]["state"] == "insufficient"
+        assert day_rows(sums, ["c"], main_threshold=0.2)[0]["state"] == "observed"

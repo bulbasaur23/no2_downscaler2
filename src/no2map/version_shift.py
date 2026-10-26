@@ -19,6 +19,9 @@ QUANTIFY, not hand-wave. Protocol enforced here:
    changed the target distribution, miscalibration shows up first.
 4. A hard guard: the eval months' processor versions must NOT overlap the
    training-version modal set; asserting the premise makes the test honest.
+   A month that mixes two processor versions is scored but flagged
+   (`version_pure: false`, `mixed_version_months`) - only version-pure months
+   can attribute a change to one retrieval update.
 """
 from __future__ import annotations
 
@@ -107,10 +110,16 @@ def version_shift_report(
             "processor months (use the g1 report / manifest versions)")
 
     fitted = fit_all(train_panel, groups, seed, alpha, xgb=xgb)
+    mixed = {m: vs for m, vs in eval_versions.items() if len(vs) > 1}
     out: dict = {
         "train_blocked": fitted["oof_report"],
         "training_versions": train_versions,
         "eval_versions": eval_versions,
+        # an eval month touched by more than one processor version cannot be
+        # attributed to a single retrieval change: score it, but never let it
+        # carry the shift claim on its own (reported, not silently pooled)
+        "eval_version_pure": not mixed,
+        "mixed_version_months": sorted(mixed),
         "per_month": {},
     }
     for month, frame in sorted(eval_frames.items()):
@@ -129,6 +138,7 @@ def version_shift_report(
         }
         out["per_month"][month] = {
             "versions": eval_versions.get(month, []),
+            "version_pure": len(eval_versions.get(month, [])) <= 1,
             "n_rows": int(len(preds)),
             "scores": cov_row,
         }

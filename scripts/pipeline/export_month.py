@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from no2map.acquisition import (
     cells_featurecollection,
-    convert_day_rows,
+    day_rows,
     day_no2_cell_sums,
     month_days,
     month_processor_versions,
@@ -52,16 +52,20 @@ def export_month(city: str, month: str, cfg: dict, manifest: ExportManifest,
     no_overpass rows (D6). Returns (filename, stats)."""
     area = cfg["study_areas"][city]
     cells_fc = cells_featurecollection(area)
+    cell_ids = statics_by_city[city]["cell_id"].tolist()
 
     no2_rows = []
     weather_rows = []
+    empty_days = []
     t0 = time.perf_counter()
     for date_str in month_days(month):
         sums = day_no2_cell_sums(area, date_str, cells_fc, no2_scale)
-        day_rows = convert_day_rows(sums, main_threshold)
-        for r in day_rows:
+        if not sums:
+            empty_days.append(date_str)
+        rows_no2 = day_rows(sums, cell_ids, main_threshold)
+        for r in rows_no2:
             r["date"] = date_str  # NO2 rows carry the same (cell_id, date) key as weather
-        no2_rows.extend(day_rows)
+        no2_rows.extend(rows_no2)
         weather_rows.extend(day_weather_stack(date_str, weather_scale, cells_fc))
     elapsed = round(time.perf_counter() - t0, 1)
 
@@ -94,6 +98,7 @@ def export_month(city: str, month: str, cfg: dict, manifest: ExportManifest,
         "rows": int(len(df)),
         "states": df["state"].value_counts().to_dict(),
         "n_cells": df["cell_id"].nunique(),
+        "no_overpass_days": empty_days,
         "processor_versions": versions,
         "seconds": elapsed,
         "path": str(out_path),
@@ -162,6 +167,7 @@ def main() -> None:
                 no2_scale, weather_scale, statics_by_city, main_threshold,
             )
             print(f"  -> {name}  rows={stats['rows']}  states={stats['states']}  "
+                  f"empty_days={len(stats['no_overpass_days'])}  "
                   f"versions={stats['processor_versions']}  secs={stats['seconds']}")
         except Exception as exc:  # noqa: BLE001 - record, decide, continue
             status = manifest.record_failure(args.city, month, repr(exc))

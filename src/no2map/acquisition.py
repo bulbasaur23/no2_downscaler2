@@ -139,7 +139,11 @@ def day_no2_cell_sums(city_cfg: dict, date_str: str, cells_fc: ee.FeatureCollect
     a SUM reducer at the L3 native scale.
 
     Rows carry exactly the inputs of cell_stats_from_sums plus cell_id; the D2
-    thresholding and unit conversion happen client-side (pure, tested)."""
+    thresholding and unit conversion happen client-side (pure, tested).
+
+    Returns [] when the date has no image in the overpass window: a date with
+    no satellite pass is a D6 fact, not an error (callers turn it into
+    `no_overpass` rows via `day_rows`)."""
     year, mon, day = map(int, date_str.split("-"))
     start = ee.Date(f"{year}-{mon:02d}-{day:02d}")
     hours = overpass_utc_hours(city_cfg["lon_min"], city_cfg["lon_max"])
@@ -150,6 +154,14 @@ def day_no2_cell_sums(city_cfg: dict, date_str: str, cells_fc: ee.FeatureCollect
         .filter(overpass_hour_filter(hours))
         .select(TARGET_BAND)
     )
+
+    if int(ic_day.size().getInfo()) == 0:
+        # Nothing matched this date + overpass window. Building a composite
+        # from an empty collection gives a BANDLESS image, and `.pow(2)` then
+        # fails server-side ("Image.pow: ... Got 0 and 1"). A date with no
+        # overpass is a data fact (D6 `no_overpass`), not a fetch failure, so
+        # signal it to the caller instead of crashing the whole month.
+        return []
 
     comp = ic_day.mean().rename("value")  # valid-only weighted mean across orbits
     stack = (
@@ -203,3 +215,40 @@ def convert_day_rows(sums_rows: list[dict], main_threshold: float) -> list[dict]
         )
         out.append({"cell_id": r["cell_id"], **stats})
     return out
+
+
+def no_overpass_rows(cell_ids: list[str]) -> list[dict]:
+    """D6 `no_overpass` row for every requested cell on a date with no imagery.
+
+    A day whose overpass window matched zero images has no cell values at all -
+    but the (cell, date) panel still needs a row per cell, otherwise the day
+    silently disappears from the export and month checks cannot tell
+    "no satellite pass" apart from "worker never ran". These rows are a data
+    fact (D6), carry no value, and are never fitted or cached as data.
+    """
+    return [
+        {
+            "cell_id": cid,
+            "value_umol_m2": None,
+            "n_valid_fraction": 0.0,
+            "subpixel_spread_umol_m2": None,
+            "n_orbit_overlap": 0.0,
+            "state": "no_overpass",
+            "reason_code": "no_overpass",
+        }
+        for cid in cell_ids
+    ]
+
+
+def day_rows(sums_rows: list[dict], cell_ids: list[str],
+             main_threshold: float = 0.5) -> list[dict]:
+    """The D6 rows for one date, covering every requested cell.
+
+    Single entry point for both the month exporter and the live path so they
+    cannot drift: an empty day (no image in the overpass window) becomes
+    `no_overpass` rows rather than an empty list; otherwise the D2 arithmetic
+    in `convert_day_rows` is applied as usual.
+    """
+    if not sums_rows:
+        return no_overpass_rows(cell_ids)
+    return convert_day_rows(sums_rows, main_threshold)
