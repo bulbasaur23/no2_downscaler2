@@ -154,7 +154,7 @@ src/no2map/     package: grid, states, features (the train/serve contract), base
                 transfer (leave-one-city-out + OOD)
 scripts/        stage0/ feasibility probes; pipeline/ export, validation, training, parity,
                 version-shift, transfer
-tests/          unit tests for every contract above (308 tests)
+tests/          unit tests for every contract above (run: `.venv\Scripts\python -m pytest -q`)
 docs/           feasibility note, data dictionary
 data/           gitignored: Parquet exports, runs, reports, cache
 ```
