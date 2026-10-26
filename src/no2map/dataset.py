@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from no2map.features import FEATURE_SCHEMA_VERSION
 from no2map.manifest import ExportManifest
 
 STATUS_DONE = "done"
@@ -88,6 +89,23 @@ def load_training_panel(
     months = [mo for mo in done_months(manifest_path, city) if tc.month_in_window(mo)]
     if not months:
         raise RuntimeError(f"no done months inside window for {city!r}")
+    # One schema per panel: a month exported under a different feature schema
+    # would concatenate silently (NaN or renamed columns) while the trained
+    # artifact would claim the installed schema. Refuse instead.
+    man = ExportManifest.load(Path(manifest_path))
+    schemas = {str(man.entries[f"{city}/{mo}"].feature_schema_version)
+               for mo in months
+               if f"{city}/{mo}" in man.entries
+               and man.entries[f"{city}/{mo}"].feature_schema_version}
+    if len(schemas) > 1:
+        raise ValueError(
+            f"{city}: months use mixed feature schemas {sorted(schemas)}; "
+            "re-export the odd months before training")
+    if schemas and FEATURE_SCHEMA_VERSION not in schemas:
+        raise ValueError(
+            f"{city}: exported months use feature schema {sorted(schemas)} but "
+            f"the installed code is {FEATURE_SCHEMA_VERSION}; re-export this "
+            "city before training")
     frames = [pd.read_parquet(p) for p in
               month_files(exports_dir, city, months)]
     panel = pd.concat(frames, ignore_index=True)

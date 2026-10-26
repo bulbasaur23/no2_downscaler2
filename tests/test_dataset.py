@@ -101,3 +101,25 @@ class TestLoader:
         with pytest.raises(ValueError, match="mismatch"):
             load_training_panel(workspace["cfg"], workspace["manifest"],
                                 workspace["exports"], "delhi_ncr")
+
+    def _set_schema(self, workspace, months: list[str], value: str) -> None:
+        data = json.loads(workspace["manifest"].read_text(encoding="utf-8"))
+        for mo in months:
+            data["entries"][f"delhi_ncr/{mo}"]["feature_schema_version"] = value
+        workspace["manifest"].write_text(json.dumps(data), encoding="utf-8")
+
+    def test_mixed_feature_schema_refused(self, workspace):
+        from no2map.features import FEATURE_SCHEMA_VERSION
+        self._set_schema(workspace, ["2023-04"], FEATURE_SCHEMA_VERSION)
+        self._set_schema(workspace, ["2024-08"], "fm-old")
+        with pytest.raises(ValueError, match="mixed feature schemas"):
+            load_training_panel(workspace["cfg"], workspace["manifest"],
+                                workspace["exports"], "delhi_ncr")
+
+    def test_stale_feature_schema_refused(self, workspace):
+        # a whole city exported under an older schema must not be trained on
+        # and then served as if it carried the installed schema
+        self._set_schema(workspace, ["2023-04", "2024-08"], "fm-old")
+        with pytest.raises(ValueError, match="re-export"):
+            load_training_panel(workspace["cfg"], workspace["manifest"],
+                                workspace["exports"], "delhi_ncr")

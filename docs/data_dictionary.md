@@ -73,7 +73,10 @@ same function (parity contract):
 
 ## Conventions
 - `feature_schema_version` bumps on ANY feature change; the parity test and
-  the serving artifact both pin it.
+  the serving artifact both pin it. The panel loader refuses a month whose
+  manifest schema differs from the installed code (and refuses a mix of
+  schemas across months), so training can never silently consume columns the
+  serving path does not produce — re-export the city instead.
 - Target-less rows (`insufficient`, `no_overpass`) carry no value and are
   never fitted; they are kept in the panel so a missing day cannot be confused
   with a day the worker never ran.
