@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from no2map.grid import cell_from_point
 from no2map.polygon import validate_polygon
-from no2map.service import create_app
+from no2map.service import create_app, live_compute_factory
 
 SQUARE = [(77.0, 28.0), (77.4, 28.0), (77.4, 28.4), (77.0, 28.4)]
 
@@ -161,6 +161,60 @@ class TestResultsExport:
             assert r["city"] in {"delhi_ncr", "hyderabad"}
 
 
+class TestLiveFactoryWiring:
+    """The API process must initialize Earth Engine itself (pipeline scripts
+    do it for their own runs); otherwise every live request fails with
+    'client library not initialized' even with valid credentials."""
+
+    def test_single_ee_init_and_fetchers_flow_through(self, tmp_path, monkeypatch):
+        import pandas as pd
+
+        import no2map.eerun as eerun
+
+        from tests.test_live import (CELL_IDS, ELEV, _no2_fn, _weather_fn,
+                                     build_test_artifact)
+
+        runs = tmp_path / "runs"
+        build_test_artifact(runs)
+        exports = tmp_path / "exports"
+        exports.mkdir()
+        pd.DataFrame({
+            "cell_id": CELL_IDS,
+            "elevation_mean_m": [ELEV[c] for c in CELL_IDS],
+            "elevation_std_m": 5.0,
+            "elevation_min_m": [ELEV[c] - 4.0 for c in CELL_IDS],
+            "elevation_max_m": [ELEV[c] + 4.0 for c in CELL_IDS],
+            "water_fraction": 0.01,
+        }).to_parquet(exports / "static_delhi_ncr.parquet", index=False)
+        cfg_path = tmp_path / "default.yaml"
+        cfg_path.write_text(
+            "study_areas:\n  delhi_ncr:\n    lon_min: 76.38\n    lon_max: 78.62\n"
+            "    lat_min: 27.60\n    lat_max: 29.32\n"
+            "observed_cell_rule:\n  main: 0.5\n"
+            "quota:\n  project_id: fake-project\n", encoding="utf-8")
+
+        calls = {"n": 0}
+
+        def fake_init(cfg=None):
+            calls["n"] += 1
+            return cfg or {}
+
+        monkeypatch.setattr(eerun, "initialize_ee", fake_init)
+        compute = live_compute_factory(
+            cfg_path, exports, runs, cache_path=None,
+            fetchers={"no2_fn": _no2_fn(), "weather_fn": _weather_fn,
+                      "version_fn": lambda c, d: ["2.8.0"]})
+        req = {"city": "delhi_ncr", "date": "2024-07-01",
+               "polygon": [[77.0, 28.0], [77.2, 28.0],
+                           [77.2, 28.05], [77.0, 28.05]]}
+        first = compute(req)
+        second = compute(req)
+        assert calls["n"] == 1  # initialized once per process, not per request
+        assert first["summary"]["n_cells"] == 4
+        assert second["summary"] == first["summary"]
+        assert first["climatology_anchor"]["available"] is True
+
+
 class TestFrontend:
     def test_index_served(self, client):
         r = client.get("/")
@@ -212,10 +266,16 @@ class TestModels:
     def test_registry_empty_then_loaded(self, tmp_path: Path):
         runs = tmp_path / "runs" / "delhi_ncr_modelA_20260101T000000Z"
         runs.mkdir(parents=True)
-        (runs / "artifact.json").write_text(json.dumps({
-            "feature_schema_version": "fm-v1", "created_at": "t",
-            "groups": ["static"], "alpha": 0.1}), encoding="utf-8")
+        meta = {"feature_schema_version": "fm-v1", "created_at": "t",
+                "groups": ["static"], "alpha": 0.1,
+                "climatology": {"city_median": 49.4}}
+        (runs / "artifact.json").write_text(json.dumps(meta), encoding="utf-8")
         c = TestClient(create_app(store_dir=tmp_path / "j", runs_dir=runs.parent))
         out = c.get("/api/models").json()
         m = out["models"]
         assert len(m) == 1 and m[0]["artifact"] and m[0]["alpha"] == 0.1
+        # the G3 fallback is served only if the bundle carries the anchor
+        assert m[0]["climatology"] is True
+        meta["climatology"] = None
+        (runs / "artifact.json").write_text(json.dumps(meta), encoding="utf-8")
+        assert c.get("/api/models").json()["models"][0]["climatology"] is False

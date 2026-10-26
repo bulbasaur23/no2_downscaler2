@@ -85,6 +85,7 @@ def live_compute_factory(
     exports_dir: str | Path = ROOT / "data" / "exports",
     runs_dir: str | Path = ROOT / "data" / "runs",
     cache_path: str | Path | None = ROOT / "data" / "cache" / "cells.sqlite",
+    fetchers: dict | None = None,
 ):
     """Build a request->result function backed by the EE live path.
 
@@ -92,7 +93,16 @@ def live_compute_factory(
     complete artifact and the statics cache once, so a request only pays for
     the EE fetch. Configuration/artifact problems surface as job failures with
     the real message instead of a silently empty map. One shared CellCache
-    implements the plan's five-part key (pass cache_path=None to disable)."""
+    implements the plan's five-part key (pass cache_path=None to disable).
+
+    Earth Engine is initialized here (once, lazily) because the API process is
+    not started by a pipeline script: without this every request would fail
+    with "client library not initialized" even with valid credentials. The
+    same failure would otherwise look like a data problem.
+
+    `fetchers` forwards no2_fn/weather_fn/version_fn to LivePredictor - the
+    seam tests use to exercise this wiring without network access.
+    """
     import yaml
 
     from no2map.cache import CellCache
@@ -103,9 +113,15 @@ def live_compute_factory(
     cache = CellCache(cache_path) if cache_path else None
     cache_by_city: dict[str, LivePredictor] = {}
     lock = threading.Lock()
+    ee_ready = False
 
     def _predictor(city: str) -> LivePredictor:
+        nonlocal ee_ready
         with lock:
+            if not ee_ready:
+                from no2map.eerun import initialize_ee
+                initialize_ee(cfg)  # raises here -> job fails with the cause
+                ee_ready = True
             if city not in cache_by_city:
                 art, run_name = load_latest_artifact(runs_dir, city)
                 cache_by_city[city] = LivePredictor(
@@ -118,6 +134,7 @@ def live_compute_factory(
                         cfg["observed_cell_rule"]["main"]),
                     cache=cache,
                     g3=load_g3_summary(exports_dir, city),
+                    **(fetchers or {}),
                 )
             return cache_by_city[city]
 
@@ -270,7 +287,9 @@ def create_app(
                         "feature_schema_version": meta.get("feature_schema_version"),
                         "created_at": meta.get("created_at"),
                         "groups": meta.get("groups"),
-                        "alpha": meta.get("alpha")})
+                        "alpha": meta.get("alpha"),
+                        # G3 honest-report: is the climatology anchor served?
+                        "climatology": meta.get("climatology") is not None})
         return {"models": out}
 
     return app

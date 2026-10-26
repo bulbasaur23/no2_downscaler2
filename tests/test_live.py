@@ -58,9 +58,8 @@ def _training_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@pytest.fixture(scope="module")
-def runs_dir(tmp_path_factory) -> Path:
-    d = tmp_path_factory.mktemp("live")
+def build_test_artifact(runs_dir: Path) -> Path:
+    """Train a tiny artifact on the synthetic frame and save the bundle."""
     df = _training_frame()
     built = build_features(df)
     fe_cols = feature_block(built, GROUPS)
@@ -70,9 +69,16 @@ def runs_dir(tmp_path_factory) -> Path:
     conf = SplitConformal(alpha=0.1, key_fn=season_key).fit(
         pd.DataFrame({"residual": resid, "month": built["month"]}))
     clim = Climatology().fit(built)
-    save_model_artifact(d / "runs" / "delhi_ncr_modelA_20261026T000000Z",
-                        model, conf, fe_cols, GROUPS,
-                        meta={"city": "delhi_ncr"}, climatology=clim)
+    return save_model_artifact(
+        runs_dir / "delhi_ncr_modelA_20261026T000000Z",
+        model, conf, fe_cols, GROUPS,
+        meta={"city": "delhi_ncr"}, climatology=clim)
+
+
+@pytest.fixture(scope="module")
+def runs_dir(tmp_path_factory) -> Path:
+    d = tmp_path_factory.mktemp("live")
+    build_test_artifact(d / "runs")
     return d / "runs"
 
 
