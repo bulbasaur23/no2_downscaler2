@@ -333,6 +333,45 @@ class TestRateLimit:
                       headers={"x-forwarded-for": "4.4.4.4"}).status_code == 200
 
 
+class TestJobConcurrency:
+    def test_ee_jobs_are_serialized_by_the_slot_bound(self, tmp_path):
+        import threading as th
+        import time as tm
+
+        active = {"now": 0, "max": 0}
+        guard = th.Lock()
+        barrier = th.Barrier(2)
+
+        def compute(req):
+            with guard:
+                active["now"] += 1
+                active["max"] = max(active["max"], active["now"])
+            tm.sleep(0.05)
+            with guard:
+                active["now"] -= 1
+            return {"city": req["city"], "date": req["date"], "cells": []}
+
+        c = TestClient(create_app(store_dir=tmp_path / "j",
+                                  runs_dir=tmp_path / "r", compute_fn=compute,
+                                  use_live=False, max_concurrent_jobs=1))
+
+        def post():
+            barrier.wait()
+            assert c.post("/api/jobs", json={"city": "delhi_ncr",
+                                             "polygon": SQUARE,
+                                             "date": "2024-07-01"}
+                          ).status_code == 200
+
+        threads = [th.Thread(target=post) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+            assert not t.is_alive()
+        # quota guard (D5): never two Earth Engine jobs at once
+        assert active["max"] == 1
+
+
 class TestModels:
     def test_registry_empty_then_loaded(self, tmp_path: Path):
         runs = tmp_path / "runs" / "delhi_ncr_modelA_20260101T000000Z"

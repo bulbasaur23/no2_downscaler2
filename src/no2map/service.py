@@ -198,6 +198,7 @@ def create_app(
     config_path: str | Path = ROOT / "configs" / "default.yaml",
     use_live: bool = True,
     trust_proxy: bool | None = None,
+    max_concurrent_jobs: int = 2,
 ) -> FastAPI:
     """API factory. `use_live=True` (default) serves real predictions; tests
     inject `compute_fn` (or pass use_live=False) to exercise the flow without
@@ -207,6 +208,7 @@ def create_app(
     X-Forwarded-For: otherwise any client can spoof the header and get a fresh
     rate-limit bucket per request. `None` reads `NO2MAP_TRUST_PROXY` so the
     documented uvicorn factory command can enable it without code changes.
+    `max_concurrent_jobs` bounds simultaneous Earth Engine work (quota, D5).
     """
     if trust_proxy is None:
         trust_proxy = os.environ.get("NO2MAP_TRUST_PROXY", "").lower() in {
@@ -246,6 +248,15 @@ def create_app(
             if fwd:
                 return fwd.split(",")[0].strip()
         return req.client.host if req.client else "anon"
+
+    # EE work is quota-limited (D5): bound how many jobs run at once, so a
+    # burst of requests cannot fire dozens of composite fetches in parallel.
+    # Jobs beyond the bound stay "queued" until a slot frees.
+    slots = threading.BoundedSemaphore(max(1, max_concurrent_jobs))
+
+    def _run_queued(job_id: str) -> None:
+        with slots:
+            _run_job(job_id, store, compute_fn)
 
     # ---- endpoints --------------------------------------------------------
 
@@ -288,7 +299,7 @@ def create_app(
                 400, f"date {date} is beyond the availability cap {cap} "
                      f"(D4: sources lag {DATE_CAP_LAG_DAYS} days)")
         job = store.create({"city": city, "polygon": polygon, "date": date})
-        bg.add_task(_run_job, job["id"], store, compute_fn)
+        bg.add_task(_run_queued, job["id"])
         return {"id": job["id"], "status": job["status"]}
 
     @app.get("/api/availability")
