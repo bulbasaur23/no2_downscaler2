@@ -28,7 +28,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from no2map.dataset import done_months, load_training_panel  # noqa: E402
+from no2map.dataset import (done_months, load_training_panel,  # noqa: E402
+                            missing_window_months)
 from no2map.features import FEATURE_GROUPS  # noqa: E402
 from no2map.model import PRED_COLS  # noqa: E402
 from no2map.transfer import transfer_report  # noqa: E402
@@ -59,6 +60,8 @@ def main() -> int:
     ap.add_argument("--ood-quantile", type=float, default=0.95)
     ap.add_argument("--ood-k", type=int, default=5)
     args = ap.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
 
     cities = [c.strip() for c in args.cities.split(",") if c.strip()]
     test_cities = ([c.strip() for c in args.test_cities.split(",") if c.strip()]
@@ -76,6 +79,27 @@ def main() -> int:
         print(f"[g5] cannot run: no exported months for {missing}")
         print("[g5] export each city first (one process per city at a time):")
         for city in missing:
+            print(f"  python scripts\\pipeline\\export_month.py --city {city} "
+                  f"--window auto")
+        return 2
+
+    # the training pool must have the complete configured window; a partial
+    # export would silently shrink the training set behind every score
+    if test_cities:
+        train_pool = [c for c in cities if c not in set(test_cities)]
+    else:
+        train_pool = list(cities)  # every city trains in some fold
+    incomplete = {c: missing_window_months(CONFIG, MANIFEST, c)
+                  for c in train_pool}
+    incomplete = {c: ms for c, ms in incomplete.items() if ms}
+    if incomplete:
+        print("[g5] cannot run: training window incomplete")
+        for city, months in incomplete.items():
+            print(f"  {city}: {len(months)} month(s) missing "
+                  f"({months[0]}..{months[-1]})")
+        print("[g5] finish those exports first (never train a transfer claim "
+              "on a short window):")
+        for city in incomplete:
             print(f"  python scripts\\pipeline\\export_month.py --city {city} "
                   f"--window auto")
         return 2

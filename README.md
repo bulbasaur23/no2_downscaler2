@@ -11,8 +11,10 @@ and **honest validation**.
 ## Concept
 
 1. **Fixed 0.05° grid** — TROPOMI's native pixel is ~5.5 × 3.5 km, so a finer grid would repeat
-   one retrieval across many cells and inflate the apparent sample size (D8). Static layers
-   (roads, elevation, emitters) are sampled at ~1 km and *summarised per cell*.
+   one retrieval across many cells and inflate the apparent sample size (D8). Static layers are
+   sampled at ~1 km and *summarised per cell*; the shipped schema has **elevation and water only**
+   (roads/emitters are a planned Should-tier addition, not yet built — see
+   `docs/data_dictionary.md`).
 2. **Draw-any-polygon live feature** — every input the model needs is available at request time
    from data sources with short latency (weather + static layers), so a user can draw any
    polygon over India and get a map without retraining.
@@ -29,7 +31,9 @@ and **honest validation**.
 | **G1** Delhi complete | **PASS** | 30 exported months 2023-04 → 2025-09, 0 failures, 0 warnings — `data/exports/g1_report_delhi_ncr.json` |
 | **G2** baselines + block size | **PASS (advice)** | residual variogram range **59.5 km**, sill 632.4 → block **89,278 m** with a 30,000 m buffer is feasible; 119 km impractical — `data/exports/g2_variogram_delhi_ncr.json` |
 | **G3** Model A checkpoint | **PASS as `honest_report`** | see below — `data/exports/g3_report_delhi_ncr.json` |
-| **G4** live polygon app | code complete, **parity run pending** | app + live path built; `scripts/pipeline/parity_check.py` needs Earth Engine auth |
+| **G4** live polygon app | **PASS** | real-data parity 12/12 cells, **max feature/prediction diff 0.0** (`data/exports/g4_parity_delhi_ncr.json`); a real HTTP job on 2025-11-25 returned observed cells + climatology anchor + G3 note, and CSV export returned 200 with the state column |
+| **D3** version-shift test | **run, honest result** | Model A still beats climatology in both post-update months, but its bias swings +10.6 → −11.3 µmol/m² — see below; `data/shift/delhi_ncr_version_shift.json` |
+| **G5** multi-city transfer | **in progress** | Bengaluru export running; Kolkata/Hyderabad exports queued; `scripts/pipeline/transfer_g5.py` implements leave-one-city-out + OOD evidence and refuses a partial training window |
 
 ### G3 result, stated plainly
 
@@ -52,14 +56,43 @@ What this means for a user: the observed/reconstructed distinction is the load-b
 "observed" cells as measurement and "reconstructed" cells as a model-informed estimate whose
 per-cell climatology is shown beside it — not as a measurement you can act on alone.
 
+### Version-shift result (post-2025 processor update), stated plainly
+
+The Nov-2025 processor update did not land on a month boundary. Measured per day over **Delhi's
+overpass window** (not the global collection): 2025-11 days 1–3 had no overpass, days 4–21 were
+still `2.8.0`, day 22 was mixed, and days 23–30 were `02.09.01`; 2025-12 was pure `02.09.01`.
+The eval set therefore uses **8 days of 2025-11 + all 31 days of 2025-12**, every one version-pure
+and outside the training versions (`2.5.0`–`2.8.0`). The 19 old-version days and 3 empty days are
+recorded in the report with their reason — excluded on the treatment, never on outcomes. Nothing
+was refit on the eval days.
+
+| Month | Eval days | Model A RMSE | Climatology RMSE | Model A bias | Level r (A vs clim) | Pattern r (A vs clim) | Interval coverage |
+|---|---|---|---|---|---|---|---|
+| 2025-11 | 8 | **41.93** | 42.60 | **+10.55** | 0.56 vs −0.07 | 0.62 vs 0.62 | 0.956 |
+| 2025-12 | 31 | **52.60** | 55.77 | **−11.31** | 0.23 vs 0.09 | 0.60 vs 0.63 | 0.911 |
+
+Reading it honestly: Model A **still beats per-cell climatology on cellwise RMSE in both months**,
+and it is the only method that tracks the day-to-day level in November (r 0.56 vs −0.07), so the
+update did not break the model. But the bias **flips sign between the two months** (+10.6 then
+−11.3 µmol/m²) while the frozen intervals stay over-covered (0.91–0.96 at a nominal 0.90) and very
+wide (72.5 µmol/m²). That is a real distribution shift, not seed noise — the honest reading is
+*usable ranking/level skill with an unstable absolute level across the processor update*. Every
+output therefore carries the processor versions, and reconstructed values should not be compared
+across the update without saying so.
+
 ### Known blockers
 
-- **Earth Engine permission**: the caller currently lacks
-  `serviceusage.services.use` on project `alan-no2-downscaler`, so any fresh fetch fails. This
-  blocks the G4 real-data parity run and the remaining 2025-11/12 exports needed for the
-  D3 version-shift test. Re-authenticate / grant the role, then rerun the two commands above.
-- The version-shift test (`scripts/pipeline/version_shift_test.py`) stays unrun until those two
-  post-update months exist; it is not tuned against, only reported.
+- ~~**Earth Engine permission**~~ **resolved 2026-10-26**: the caller had lacked
+  `serviceusage.services.use` on project `alan-no2-downscaler`. After re-auth the 2025-11 month was
+  re-exported (48,300 rows; 3 days genuinely had no overpass and are recorded as `no_overpass` —
+  previously an empty-day bug crashed the whole month, see git history).
+- **Road/emitter static features are not built** (scope gap, see Limits): the model uses elevation
+  and water only, so the Phase-5 emitter-count check cannot run.
+- **The Nov-2025 processor update did not land on a month boundary.** Measured over Delhi's
+  overpass window: 2025-11 days 1–3 have no overpass, days 4–21 are still `2.8.0` (a training
+  version), day 22 is mixed, days 23–30 are `02.09.01`; 2025-12 is pure `02.09.01`. The shift runner
+  therefore keeps only version-pure eval days and records every excluded day with its reason —
+  exclusion is on the treatment (processor), never on outcomes.
 
 ## Scope tiers (from the v3 plan)
 
@@ -113,9 +146,11 @@ claims, coastal modelling (water is masked; coastal cells are warned only).
 configs/        default.yaml — grid, thresholds, study areas, versions (locked decisions)
 src/no2map/     package: grid, states, features (the train/serve contract), baselines,
                 model (blocked + chronological runners), conformal, artifact (serving
-                bundle), live (polygon request path), cache, service (FastAPI) + web/
-scripts/        stage0/ feasibility probes; pipeline/ export, validation, training, parity
-tests/          unit tests for every contract above (277 tests)
+                bundle), live (polygon request path), cache, service (FastAPI) + web/,
+                transfer (leave-one-city-out + OOD)
+scripts/        stage0/ feasibility probes; pipeline/ export, validation, training, parity,
+                version-shift, transfer
+tests/          unit tests for every contract above (308 tests)
 docs/           feasibility note, data dictionary
 data/           gitignored: Parquet exports, runs, reports, cache
 ```
@@ -146,7 +181,7 @@ python scripts\stage0\quota_cost.py            # one-image compute cost (D5)
 
 Feasibility findings go into `docs/feasibility.md` — that plus the Parquet month is Gate G0.
 
-## Running the pipeline (G1 → G4)
+## Running the pipeline (G1 → G5)
 
 All commands are resumable/idempotent except the export worker, which must be run **one process
 per city at a time** (it writes the manifest).
@@ -169,6 +204,14 @@ python scripts\pipeline\train_model_a.py --city delhi_ncr --block-m 89278 --buff
 
 # G4: real-data parity, training path vs live path (needs Earth Engine auth)
 python scripts\pipeline\parity_check.py --city delhi_ncr --date 2025-02-10 --cells 12
+
+# D3: frozen version-shift test on version-pure post-update days
+python scripts\pipeline\version_shift_test.py --city delhi_ncr --block-m 89278 --buffer-m 30000
+
+# G5: leave-one-city-out transfer + OOD evidence (needs the training cities exported)
+python scripts\pipeline\transfer_g5.py --cities delhi_ncr,bengaluru,kolkata
+# G5 case study: train on the three cities, score the untouched city
+python scripts\pipeline\transfer_g5.py --cities delhi_ncr,bengaluru,kolkata,hyderabad --test-cities hyderabad
 ```
 
 ### Running the app
@@ -192,4 +235,7 @@ no Earth Engine work. Predictions on dates inside the training window are flagge
 - Reconstructed maps are *modelling*, not observation; evaluated only on real gap shapes.
 - Single-day retrievals are noisy — daily, weekly and monthly aggregations all reported.
 - Columns are not surface concentrations; coastal cells are excluded with a warning.
+- **Road-density and emitter features are not implemented** (the plan's Phase 2 lists them);
+  the model uses elevation + water as static context. The Phase-5 "emitter count per city" check
+  therefore cannot run yet, and transfer results reflect the smaller feature set.
 - Coverage, model version, data versions and warnings are shown on every output.

@@ -164,7 +164,40 @@ class TestEvalDayPurity:
         assert excluded == {}
 
 
+class TestProtocolPlumbing:
+    """The CLI's block protocol must actually reach the blocked-CV fit."""
+
+    def test_block_params_reach_fit_all(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_fit_all(train, groups, seed, alpha, block_m=30_000.0,
+                         buffer_m=0.0, xgb=None):
+            seen.update(block_m=block_m, buffer_m=buffer_m)
+            raise RuntimeError("stop after capturing")
+
+        monkeypatch.setattr("no2map.version_shift.fit_all", fake_fit_all)
+        with pytest.raises(RuntimeError, match="stop after capturing"):
+            version_shift_report(
+                _synthetic_panel(), {"2025-11": _eval_frame()},
+                TRAIN_VERSIONS, {"2025-11": ["02.09.01"]}, GROUPS,
+                block_m=1234.0, buffer_m=99.0)
+        assert seen == {"block_m": 1234.0, "buffer_m": 99.0}
+
+
 class TestFitPredict:
+    def test_targetless_rows_are_not_fitted(self):
+        # exported months carry insufficient/no_overpass rows with NaN target;
+        # the final refit must drop them exactly as the blocked CV does
+        # (measured: the first real shift run died on an XGBoost NaN label)
+        panel = _synthetic_panel()
+        dirty = pd.concat([
+            panel,
+            panel.iloc[:40].assign(state="no_overpass", **{TARGET: np.nan}),
+        ], ignore_index=True)
+        fitted = fit_all(dirty, GROUPS, seed=1, alpha=0.1)
+        out = predict_frozen(fitted, _eval_frame(), GROUPS)
+        assert np.isfinite(out["pred_model_a"].to_numpy(dtype=float)).all()
+
     def test_predict_frozen_columns_and_rows(self):
         fitted = fit_all(_synthetic_panel(), GROUPS, seed=1, alpha=0.1)
         ev = _eval_frame()

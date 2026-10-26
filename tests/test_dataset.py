@@ -12,6 +12,7 @@ from no2map.dataset import (
     TrainingConfig,
     done_months,
     load_training_panel,
+    missing_window_months,
     month_files,
 )
 
@@ -69,6 +70,17 @@ class TestLoader:
         mos = done_months(workspace["manifest"], "delhi_ncr")
         assert mos == sorted({"2023-04", "2024-08", "2025-11"})
         assert "2024-10" not in mos  # skipped months are not done
+
+    def test_missing_window_months_flags_partial_window(self, workspace):
+        missing = missing_window_months(
+            workspace["cfg"], workspace["manifest"], "delhi_ncr")
+        assert "2023-04" not in missing        # done
+        assert "2024-08" not in missing        # done
+        assert "2023-05" in missing            # never exported
+        assert "2024-10" in missing            # skipped, so still missing
+        assert "2024-09" not in missing        # excluded transition month
+        assert "2024-11" not in missing        # excluded transition month
+        assert "2025-11" not in missing        # outside the training window
 
     def test_month_files_fails_loudly_on_missing_parquet(self, workspace):
         with pytest.raises(FileNotFoundError):

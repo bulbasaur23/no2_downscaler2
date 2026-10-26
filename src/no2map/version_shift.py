@@ -5,10 +5,11 @@ Nov-2025 update (02.09.01) is exactly the kind of shift the plan demands we
 QUANTIFY, not hand-wave. Protocol enforced here:
 
 1. Everything is fitted on the training window only (2023-04..2025-09,
-   transitions excluded): the model's hyperparameters, its final refit on
-   all window rows, the climatology/city-mean/Ridge references, and the
-   conformal margins (calibrated on window OOF residuals with the same
-   season-stratified scheme as in production serving).
+   transitions excluded): the model's hyperparameters, its final refit on the
+   observed window rows (target-less insufficient/no_overpass rows are never
+   fitted), the climatology/city-mean/Ridge references, and the conformal
+   margins (calibrated on window OOF residuals with the same season-stratified
+   scheme as in production serving).
 2. The evaluation months (from version_shift_start, e.g. 2025-11) are read
    separately, passed through the SAME feature module (train/serve parity),
    and predicted FROZEN - nothing is refit on them, nothing from them may
@@ -30,7 +31,8 @@ import pandas as pd
 
 from no2map.baselines import Climatology, DailyCityMean, RidgeBaseline
 from no2map.conformal import SplitConformal
-from no2map.features import TARGET, build_features, feature_block
+from no2map.features import (TARGET, build_features, clean_training_frame,
+                             feature_block)
 from no2map.model import PRED_COLS, XGBConfig, run_blocked_evaluation, season_key
 from no2map.evaluation import full_scores
 
@@ -45,7 +47,11 @@ def fit_all(train_panel: pd.DataFrame, groups: list[str], seed: int,
         alpha=alpha, xgb=xgb)
     conf = SplitConformal(alpha=alpha, key_fn=season_key).fit(oof)
 
-    rows = build_features(train_panel)
+    # Final refits must see exactly the rows the blocked CV trains on:
+    # observed state + a real target. Exported months carry insufficient /
+    # no_overpass rows with NaN targets, and XGBoost refuses NaN labels
+    # (measured: the first real shift run died here before any score existed).
+    rows = build_features(clean_training_frame(train_panel))
     fe_cols = feature_block(rows, groups)
     model = xgb.make(seed)
     model.fit(rows[fe_cols], rows[TARGET])
@@ -130,8 +136,14 @@ def version_shift_report(
     seed: int = 0,
     alpha: float = 0.1,
     xgb: XGBConfig | None = None,
+    block_m: float = 30_000.0,
+    buffer_m: float = 0.0,
 ) -> dict:
-    """Full shift report; refuses if the eval versions overlap training's."""
+    """Full shift report; refuses if the eval versions overlap training's.
+
+    `block_m`/`buffer_m` are the G2 block protocol; they must reach the
+    blocked-CV fit, otherwise the CLI's flags would silently not apply.
+    """
     overlap = sorted(set(train_versions) & set(
         v for vs in eval_versions.values() for v in vs))
     if overlap:
@@ -140,7 +152,8 @@ def version_shift_report(
             f"processor versions {overlap}; the shift set must be new-"
             "processor months (use the g1 report / manifest versions)")
 
-    fitted = fit_all(train_panel, groups, seed, alpha, xgb=xgb)
+    fitted = fit_all(train_panel, groups, seed, alpha,
+                     block_m=block_m, buffer_m=buffer_m, xgb=xgb)
     mixed = {m: vs for m, vs in eval_versions.items() if len(vs) > 1}
     out: dict = {
         "train_blocked": fitted["oof_report"],

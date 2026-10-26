@@ -50,6 +50,21 @@ def done_months(manifest_path: str | Path, city: str) -> list[str]:
                   if e.status == STATUS_DONE and k.startswith(f"{city}/"))
 
 
+def missing_window_months(config_path: str | Path, manifest_path: str | Path,
+                          city: str) -> list[str]:
+    """Configured training-window months with no `done` manifest entry.
+
+    Every gate assumes a complete training window. A partially finished
+    multi-city export would otherwise train and score on a silently shorter
+    window, so entrypoints refuse instead of reporting a number that means
+    something else than it claims."""
+    tc = TrainingConfig.from_config(config_path)
+    m = ExportManifest.load(Path(manifest_path))
+    expected = [mo for mo in ExportManifest.months_between(
+        tc.window_start[:7], tc.window_end[:7]) if tc.month_in_window(mo)]
+    return [mo for mo in expected if not m.is_done(city, mo)]
+
+
 def month_files(exports_dir: str | Path, city: str, months: list[str]) -> list[Path]:
     base = Path(exports_dir) / city
     files = [(mo, base / f"{city}_{mo}.parquet") for mo in months]

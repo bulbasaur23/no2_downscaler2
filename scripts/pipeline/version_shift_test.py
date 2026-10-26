@@ -31,7 +31,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from no2map.dataset import TrainingConfig, load_training_panel  # noqa: E402
+from no2map.dataset import (TrainingConfig, load_training_panel,  # noqa: E402
+                            missing_window_months)
 from no2map.features import FEATURE_GROUPS  # noqa: E402
 from no2map.version_shift import (partition_eval_days,  # noqa: E402
                                   version_shift_report)
@@ -93,6 +94,9 @@ def main() -> int:
                          "that still carry a training processor version "
                          "(off by default: such days cannot test the shift)")
     args = ap.parse_args()
+    # long fit: keep the log readable while running under a redirect
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
     config_path = ROOT / "configs" / "default.yaml"
@@ -133,6 +137,15 @@ def main() -> int:
     def versions_of(month: str) -> list[str]:
         e = manifest.get(f"{args.city}/{month}") or {}
         return list(e.get("processor_versions") or [])
+
+    # a quietly short training window would invalidate the whole comparison
+    missing_train = missing_window_months(config_path, manifest_path, args.city)
+    if missing_train:
+        print(f"[shift] cannot run: training window incomplete "
+              f"({len(missing_train)} month(s) not done): {missing_train}")
+        print(f"  python scripts\\pipeline\\export_month.py --city "
+              f"{args.city} --window auto")
+        return 2
 
     train_panel = load_training_panel(
         config_path, manifest_path, ROOT / "data" / "exports", args.city)
@@ -189,10 +202,19 @@ def main() -> int:
         print("[shift] no eval month has a version-pure day: nothing to score")
         return 2
 
-    rep = version_shift_report(
-        train_panel, eval_frames, train_versions, eval_versions,
-        groups, seed=args.seed, alpha=args.alpha,
-    )
+    print(f"[shift] protocol: blocked CV block={args.block_m:.0f} m "
+          f"buffer={args.buffer_m:.0f} m, seed={args.seed}, alpha={args.alpha} "
+          f"(frozen; eval days never enter the fit)")
+    try:
+        rep = version_shift_report(
+            train_panel, eval_frames, train_versions, eval_versions,
+            groups, seed=args.seed, alpha=args.alpha,
+            block_m=args.block_m, buffer_m=args.buffer_m,
+        )
+    except ValueError as exc:
+        # the premise guard: a mixed eval set cannot test a processor shift
+        print(f"[shift] cannot score: {exc}")
+        return 2
 
     print("\n[shift] per-month, per-method (rmse | bias | level_r | "
           "pattern_r | coverage):")
