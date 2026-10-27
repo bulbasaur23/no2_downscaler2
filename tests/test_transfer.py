@@ -19,6 +19,7 @@ from no2map.transfer import (
     OOD_FEATURES,
     OODReference,
     city_diagnostics,
+    fold_feasibility_problems,
     ood_evidence,
     transfer_report,
 )
@@ -171,3 +172,19 @@ class TestTransferReport:
     def test_single_city_cannot_train_itself(self):
         with pytest.raises(ValueError, match="no other city"):
             transfer_report({"alpha": _city()}, GROUPS, test_cities=["alpha"])
+
+    def test_degenerate_fold_pool_reported_before_fitting(self):
+        # the synthetic cells span ~55 km, so a 200 km block tiles the
+        # one-city pool into a single degenerate block: the pre-flight must
+        # say so instead of dying inside the blocked CV half-way through
+        panels = {"alpha": _city(seed=3), "beta": _city(seed=4)}
+        problems = fold_feasibility_problems(
+            panels, {"beta": ["alpha"]}, block_m=5_000_000.0, buffer_m=0.0)
+        assert len(problems) == 1
+        assert "fold test=beta" in problems[0]
+        assert "degenerate" in problems[0]
+
+    def test_feasible_pool_reports_no_problem(self):
+        panels = {"alpha": _city(seed=3), "beta": _city(seed=4)}
+        assert fold_feasibility_problems(
+            panels, {"beta": ["alpha"]}, block_m=5_000.0, buffer_m=0.0) == []

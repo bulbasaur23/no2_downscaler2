@@ -29,6 +29,7 @@ import pandas as pd
 from no2map.evaluation import full_scores, rmse
 from no2map.features import TARGET
 from no2map.model import PRED_COLS, XGBConfig
+from no2map.splits import spatial_block_folds
 from no2map.version_shift import fit_all, predict_frozen
 
 # Static-only OOD space: deliberately no lat/lon (risk 11) and no target-
@@ -170,6 +171,43 @@ def ood_evidence(preds: pd.DataFrame, pred_col: str = "pred_model_a") -> dict:
         "delta_flagged_minus_unflagged": (None if f is None or u is None else f - u),
         "flagged_higher_error": (None if f is None or u is None else bool(f > u)),
     }
+
+
+def fold_feasibility_problems(
+    panels: dict[str, pd.DataFrame],
+    train_cities_for: dict[str, list[str]],
+    block_m: float,
+    buffer_m: float,
+    verbose: bool = True,
+) -> list[str]:
+    """Per-fold block-feasibility check, made BEFORE any fitting starts.
+
+    The blocked-CV protocol is part of the treatment, so this never looks at
+    outcomes - only at whether each fold's training-pool extent can carry the
+    requested block/gap at all (measured: a two-city LOSO leaves a fold whose
+    pool is one small city, and Delhi's 89,278 m block tiles that city into a
+    single degenerate block - the pilot run died at fold 1 after loading
+    panels). Returns one sentence per infeasible fold, sorted by fold name;
+    feasible folds are printed when `verbose` is set.
+    """
+    problems = []
+    for test_city, train_cities in sorted(train_cities_for.items()):
+        pool = pd.concat([panels[c] for c in train_cities], ignore_index=True)
+        cells = sorted(pool["cell_id"].unique())
+        try:
+            folds = spatial_block_folds(cells, block_m=block_m,
+                                        buffer_m=buffer_m)
+        except ValueError as e:
+            problems.append(
+                f"fold test={test_city} (train: {', '.join(train_cities)}, "
+                f"{len(cells)} cells): {e}")
+            continue
+        sizes = [len(t) for _, t, _ in folds]
+        if verbose:
+            print(f"[g5] fold test={test_city}: {len(folds)} blocks of "
+                  f"{block_m:,.0f} m, train cells {min(sizes)}..{max(sizes)} "
+                  f"per fold (pool {len(cells)})")
+    return problems
 
 
 def transfer_report(

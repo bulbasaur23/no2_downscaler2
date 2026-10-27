@@ -33,7 +33,7 @@ from no2map.dataset import (done_months, load_training_panel,  # noqa: E402
 from no2map.features import FEATURE_GROUPS  # noqa: E402
 from no2map.manifest import STATUS_DONE, ExportManifest  # noqa: E402
 from no2map.model import PRED_COLS  # noqa: E402
-from no2map.transfer import transfer_report  # noqa: E402
+from no2map.transfer import fold_feasibility_problems, transfer_report  # noqa: E402
 
 CONFIG = ROOT / "configs" / "default.yaml"
 MANIFEST = ROOT / "data" / "exports" / "manifest.json"
@@ -114,6 +114,21 @@ def main() -> int:
         print(f"[g5] {city}: {len(panel):,} rows, months "
               f"{panel.attrs['months'][0]}..{panel.attrs['months'][-1]}")
         panels[city] = panel
+
+    # per-fold block feasibility BEFORE fitting (treatment-based: does the
+    # fold's training pool carry the requested block/gap, never outcomes)
+    tests = list(test_cities or cities)
+    fold_plan = {t: [c for c in cities if c != t] for t in tests}
+    problems = fold_feasibility_problems(
+        panels, fold_plan, args.block_m, args.buffer_m)
+    if problems:
+        print("[g5] cannot run: the blocked protocol does not fit every fold")
+        for p in problems:
+            print(f"  {p}")
+        print("[g5] options: use more training cities (pooled extents must "
+              "span several blocks), or a smaller --block-m/--buffer-m "
+              "matched to the smallest pools (G2 advice per city)")
+        return 2
 
     rep = transfer_report(
         panels, groups, test_cities=test_cities, seed=args.seed,
