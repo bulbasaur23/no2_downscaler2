@@ -160,11 +160,13 @@ def main() -> None:
         print(f"[info] statics computed for {len(statics_by_city[args.city])} cells")
 
     def _heartbeat(city: str, month: str, stop: "threading.Event") -> None:
-        """Print a line every 120 s while a month runs. The EE client has no
+        """Print a line every 240 s while a month runs. The EE client has no
         per-call timeout; a wedged getInfo once stalled a city silently for
-        half an hour - the heartbeat makes that visible in the log."""
+        half an hour - the heartbeat makes that visible in the log. The
+        interval is ~2x a normal month (Kolkata healthy months ran 100-150 s):
+        a heartbeat line must reliably mean stall, not just a slow month."""
         start = time.monotonic()
-        while not stop.wait(120.0):
+        while not stop.wait(240.0):
             print(f"[{city}] {month}: still running after "
                   f"{time.monotonic() - start:.0f}s", flush=True)
 
