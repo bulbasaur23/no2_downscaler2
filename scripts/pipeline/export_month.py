@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -158,18 +159,33 @@ def main() -> None:
         statics_by_city[args.city].to_parquet(static_cache_file, index=False)
         print(f"[info] statics computed for {len(statics_by_city[args.city])} cells")
 
+    def _heartbeat(city: str, month: str, stop: "threading.Event") -> None:
+        """Print a line every 120 s while a month runs. The EE client has no
+        per-call timeout; a wedged getInfo once stalled a city silently for
+        half an hour - the heartbeat makes that visible in the log."""
+        start = time.monotonic()
+        while not stop.wait(120.0):
+            print(f"[{city}] {month}: still running after "
+                  f"{time.monotonic() - start:.0f}s", flush=True)
+
     for i, month in enumerate(months_list, start=1):
         manifest.ensure_pending(args.city, [month])  # so failures are recordable
         print(f"[{args.city}] month {i}/{len(months_list)}: {month} ...", flush=True)
+        stop = threading.Event()
+        hb = threading.Thread(target=_heartbeat, name="heartbeat",
+                              args=(args.city, month, stop), daemon=True)
+        hb.start()
         try:
             name, stats = export_month(
                 args.city, month, cfg, manifest,
                 no2_scale, weather_scale, statics_by_city, main_threshold,
             )
+            stop.set()
             print(f"  -> {name}  rows={stats['rows']}  states={stats['states']}  "
                   f"empty_days={len(stats['no_overpass_days'])}  "
                   f"versions={stats['processor_versions']}  secs={stats['seconds']}")
         except Exception as exc:  # noqa: BLE001 - record, decide, continue
+            stop.set()
             status = manifest.record_failure(args.city, month, repr(exc))
             manifest.save()
             print(f"  -> FAILED ({status}): {exc!r}")
