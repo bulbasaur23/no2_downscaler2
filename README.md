@@ -33,7 +33,7 @@ and **honest validation**.
 | **G3** Model A checkpoint | **PASS as `honest_report`** (Delhi) / **PASS `both_splits`** (Bengaluru) | Delhi: +2.03 vs climatology blocked, −1.58 chron; Bengaluru: **−2.57 blocked** (SD 0.07, beyond noise), −1.12 chron — see below; `g3_report_delhi_ncr.json`, `g3_report_bengaluru.json` |
 | **G4** live polygon app | **PASS** | real-data parity 12/12 cells, **max feature/prediction diff 0.0** (`data/exports/g4_parity_delhi_ncr.json`); a real HTTP job on 2025-11-25 returned observed cells + climatology anchor + G3 note, and CSV export returned 200 with the state column |
 | **D3** version-shift test | **run, honest result** | Model A still beats climatology in both post-update months, but its bias swings +10.6 → −11.3 µmol/m² — see below; `data/shift/delhi_ncr_version_shift.json` |
-| **G5** multi-city transfer | **in progress** | Bengaluru export running; Kolkata/Hyderabad exports queued; `scripts/pipeline/transfer_g5.py` implements leave-one-city-out + OOD evidence and refuses a partial training window |
+| **G5** multi-city transfer | **run, honest result** | LOSO over `delhi_ncr,bengaluru,kolkata` on Delhi's locked protocol (block 89,278 m / gap 30,000 m; pre-flight proved every fold's pooled panel spans 5-11 blocks) + Hyderabad case study; skill transfers as **city-day level** (level r 0.55-0.70) but **not as within-city pattern** (pattern r -0.06..+0.18), deltas vs held-out climatology -2.99..+0.68; OOD flag separates error where it has resolution (Delhi: flagged RMSE +3.28, `flag_higher_error=True`) - details below; `data/exports/g5_transfer_3city.json`, `data/exports/g5_transfer.json` |
 
 ### G3 result, stated plainly
 
@@ -101,6 +101,47 @@ Bengaluru's static-only baseline is 21.21 vs the full model's 16.83 — weather/
 worth ~4.4 µmol/m² there, and Bengaluru's model beats the climatology anchor on genuinely unseen
 blocks, which Delhi's does not. Each verdict is served verbatim in the app (the G3 banner is
 per city; the serving artifact is likewise per city and per protocol).
+
+### G5 — what transfers between cities, and what honestly does not
+
+Protocol: leave-one-city-out (LOSO) with Delhi's locked blocked protocol (block 89,278 m, gap
+30,000 m) applied to the **pooled** training panels — the feasibility pre-flight proved every fold's
+pool spans 5-11 blocks with 156-1,636 training cells, i.e. the two-city pilot's degenerate fold can
+not recur at 3 cities. All four feature groups, seed 0. The Hyderabad case study trains on the three
+gated cities and scores a city that contributed nothing at all.
+
+| Held-out city | Model A RMSE | vs held-out climatology | bias | r² | level r | pattern r |
+|---|---|---|---|---|---|---|
+| Bengaluru | 21.76 | **−2.99 better** | +10.2 | −0.13 | 0.64 | +0.18 |
+| Delhi NCR | 38.14 | −0.74 (≈ tie) | −10.5 | −0.03 | 0.55 | +0.09 |
+| Kolkata | 31.85 | **+0.68 worse** | −8.9 | −0.08 | 0.28 | −0.06 |
+| Hyderabad (case study) | 20.53 | −1.05 better | **−1.7** | **+0.08** | **0.70** | −0.03 |
+
+Four statements the numbers support, no more and no less:
+
+1. **City-day *level* transfers**: day-scale "how high is the city total today" correlates
+   r=0.55-0.70 across folds (the shared weather/temporal features do that work); Hyderabad — a city
+   the model never saw — gets its only positive r² (+0.08) and near-zero bias.
+2. **Within-city *pattern* does not transfer**: per-date spatial correlation is +0.09..+0.18 at best
+   and negative twice. The current feature set carries no notion of *where* inside an unseen city
+   emissions sit, so a transferred map is a city-level estimate, not a neighborhood map.
+3. **Bias does not transfer** (+10.2/−8.9/−10.5): each fold systematically misjudges the unseen
+   city's level — the transfer table is honest about calibration risk, not only RMSE. Kolkata's fold
+   is the honest failure: with a statics sill of 886, its residual variance is dominated by local
+   structure the cross-city model has never seen (~+0.68 worse is inside that noise).
+4. **The OOD flag works where it has resolution.** In Delhi's fold only 10.6% of rows are flagged
+   (cells outside the south-India elevation/water envelope), and flagged cells have RMSE 41.06 vs
+   37.78 unflagged — `flag_higher_error=True`, i.e. the flag *predicts where the transferred model
+   is least trustworthy*. In the other folds the flag saturates (100% flagged at the 95th-percentile
+   threshold: every cell of Bengaluru/Kolkata/Hyderabad reads as out-of-distribution to the pooled
+   statics reference), so no discriminating statement is possible there, and the report records
+   `None` rather than claiming success.
+
+Caveat (serving vs transfer): every fold's `climatology_fallback_rate` is 1.000 — structural, not a
+bug: the pooled climatology has no per-cell history for an unseen city's cells, so a *frozen serving
+artifact* would serve the pooled median there. That is why serving stays per city (G3 artifacts),
+and the G5 numbers measure what a trained-on-everything city gains over its own dumb anchor, not
+what the app would splice together live.
 
 ### Known blockers
 
