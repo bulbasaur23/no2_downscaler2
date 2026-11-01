@@ -120,8 +120,9 @@ gated cities and scores a city that contributed nothing at all.
 Four statements the numbers support, no more and no less:
 
 1. **City-day *level* transfers**: day-scale "how high is the city total today" correlates
-   r=0.55-0.70 across folds (the shared weather/temporal features do that work); Hyderabad — a city
-   the model never saw — gets its only positive r² (+0.08) and near-zero bias.
+   r = 0.28–0.70 across folds (Bengaluru 0.64, Delhi 0.55, Kolkata 0.28, Hyderabad 0.70); the
+   shared weather/temporal features do that work. Hyderabad — a city the model never saw — gets
+   its only positive r² (+0.08) and near-zero bias.
 2. **Within-city *pattern* does not transfer**: per-date spatial correlation is +0.09..+0.18 at best
    and negative twice. The current feature set carries no notion of *where* inside an unseen city
    emissions sit, so a transferred map is a city-level estimate, not a neighborhood map.
