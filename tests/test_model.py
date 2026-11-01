@@ -130,6 +130,40 @@ class TestRunner:
             run_blocked_evaluation(df, ["static", "not_a_group"],
                                    TROPOMI_CELL_M * 3.0, seed=1)
 
+    def test_blocked_training_respects_the_buffer_ring(self, monkeypatch):
+        # CodeRabbit finding: spatial_block_folds returns train_cells with the
+        # validation block AND its buffer ring already removed, but the fold
+        # loop must actually USE that list - training on "everything except
+        # the val block" puts the ring back and silently cancels the gap,
+        # leaking correlated neighbours into every blocked score.
+        import no2map.model as model_module
+        from no2map.splits import spatial_block_folds
+
+        df = _synthetic_panel()
+        cells = sorted(df["cell_id"].unique())
+        folds = spatial_block_folds(
+            cells, block_m=TROPOMI_CELL_M * 3.0, buffer_m=7_000.0)
+        # sanity: the buffer does drop cells somewhere (otherwise this test
+        # could pass with the gap doing nothing at all)
+        n_cells = len(cells)
+        assert any(len(t) < n_cells - len(v) for _, t, v in folds)
+
+        captured: list[set[str]] = []
+        orig = model_module._fit_all_fold_methods
+
+        def spy(train_rows, fe_cols, seed, xgb=None):
+            captured.append(set(train_rows["cell_id"].unique()))
+            return orig(train_rows, fe_cols, seed, xgb)
+
+        monkeypatch.setattr(model_module, "_fit_all_fold_methods", spy)
+        run_blocked_evaluation(
+            df, GROUPS_ALL, block_m=TROPOMI_CELL_M * 3.0,
+            buffer_m=7_000.0, seed=0)
+
+        expected = {frozenset(t) for _, t, _ in folds}
+        assert len(captured) == len(expected)
+        assert {frozenset(c) for c in captured} == expected
+
 
 class TestSeasonKey:
     def test_dtype_stable_months(self):

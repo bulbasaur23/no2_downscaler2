@@ -42,7 +42,15 @@ def main() -> int:
         ROOT / "configs" / "default.yaml",
         ROOT / "data" / "exports" / "manifest.json",
         ROOT / "data" / "exports", args.city)
-    obs = panel[(panel["state"] == "observed")][["date", "cell_id", TARGET]]
+    obs = panel[(panel["state"] == "observed")][["date", "cell_id", TARGET]].copy()
+    # The G2 claim is a RESIDUAL variogram: same-date pairing removes the day
+    # mean, but the persistent urban/plume trend lives in the raw field. The
+    # reference subtracted here is the per-(cell, month) median over the
+    # observed rows of the training window only - descriptive statistics,
+    # never a holdout protocol.
+    obs["month"] = obs["date"].str.slice(5, 7)
+    obs["resid"] = (obs[TARGET]
+                    - obs.groupby(["cell_id", "month"])[TARGET].transform("median"))
     all_dates = np.array(sorted(obs["date"].unique()))
     rng = np.random.default_rng(0)
     pick = all_dates[np.sort(rng.choice(len(all_dates),
@@ -52,7 +60,8 @@ def main() -> int:
     print(f"[g2] {args.city}: {len(sub):,} observed rows | "
           f"{len(pick)} dates | {sub['cell_id'].nunique()} cells")
 
-    res = empirical_semivariogram(sub, TARGET, n_bins=args.n_bins)
+    res = empirical_semivariogram(sub, "resid", n_bins=args.n_bins)
+    print("[g2] reference: per-(cell, month) median anomaly (residual variogram)")
     print(f"[g2] exponential fit: range={res.range_m:,.0f} m "
           f"({res.range_m / 1000:.1f} km), sill={res.sill:.2f}")
     print("[g2] bins (m): gamma / pairs")
@@ -63,6 +72,7 @@ def main() -> int:
     widths = (lon_w, lat_w)
     out = {"city": args.city, "n_dates": len(pick), "n_rows": len(sub),
            "range_m": res.range_m, "sill": res.sill,
+           "reference": "per_cell_month_median_residual",
            "tropomi_cell_m": TROPOMI_CELL_M,
            "bins": {"centers_m": res.bin_centers_m.tolist(),
                     "gamma": res.gamma.tolist(),

@@ -165,7 +165,9 @@ def validate_polygon(
     mid_lat = (min(lat) + max(lat)) / 2.0
     coslat = math.cos(math.radians(mid_lat))
     area_deg2 = _shoelace_scaled(pts, coslat)
-    area_m2 = area_deg2 * (m_per_deg_lat ** 2) * coslat
+    # _shoelace_scaled already carries the coslat factor in its lon scaling;
+    # multiplying again would understate area by coslat (~12% at Delhi).
+    area_m2 = area_deg2 * (m_per_deg_lat ** 2)
     if max_area_m2 is not None and area_m2 > max_area_m2:
         raise ValueError(
             f"polygon area {area_m2 / 1e6:.1f} km2 exceeds the limit "

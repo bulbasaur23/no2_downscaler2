@@ -153,7 +153,11 @@ def run_blocked_evaluation(
 
     oof_parts: list[pd.DataFrame] = []
     for blk, train_cells, val_cells in folds:
-        train_rows = prepared[~prepared["cell_id"].isin(rows_by_block[blk])]
+        # train only on the cells spatial_block_folds actually kept: it already
+        # removed the validation block AND the buffer ring around it. Rebuilding
+        # "everything except the val block" would put the ring cells back into
+        # training and silently cancel the gap (found by CodeRabbit review).
+        train_rows = prepared[prepared["cell_id"].isin(set(train_cells))]
         val_rows = prepared[prepared["cell_id"].isin(set(val_cells))]
         if train_rows.empty or val_rows.empty:
             continue

@@ -251,8 +251,14 @@ def transfer_report(
         "folds": {},
     }
 
+    # explicit test cities are excluded from EVERY fold's training pool, not
+    # only their own fold (matches the --test-cities contract). The default
+    # LOSO path - every city tested - keeps the all-others convention, so
+    # previously published results are unaffected by this branch.
+    excluded = set(test_cities) if test_cities is not None else set()
+
     for test_city in tests:
-        train_cities = [c for c in pool if c != test_city]
+        train_cities = [c for c in pool if c != test_city and c not in excluded]
         if not train_cities:
             raise ValueError(f"cannot train for {test_city!r}: no other city")
         train = pd.concat([panels[c] for c in train_cities], ignore_index=True)

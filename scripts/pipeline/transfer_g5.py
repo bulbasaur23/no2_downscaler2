@@ -118,7 +118,11 @@ def main() -> int:
     # per-fold block feasibility BEFORE fitting (treatment-based: does the
     # fold's training pool carry the requested block/gap, never outcomes)
     tests = list(test_cities or cities)
-    fold_plan = {t: [c for c in cities if c != t] for t in tests}
+    # explicit test cities are excluded from every fold's training pool (the
+    # --test-cities contract); the default LOSO path keeps all-others
+    excluded = set(test_cities) if test_cities else set()
+    fold_plan = {t: [c for c in cities if c != t and c not in excluded]
+                 for t in tests}
     problems = fold_feasibility_problems(
         panels, fold_plan, args.block_m, args.buffer_m)
     if problems:

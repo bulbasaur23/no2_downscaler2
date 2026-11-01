@@ -173,6 +173,26 @@ class TestTransferReport:
         with pytest.raises(ValueError, match="no other city"):
             transfer_report({"alpha": _city()}, GROUPS, test_cities=["alpha"])
 
+    def test_multi_test_city_excludes_full_test_set_from_pools(self):
+        # CodeRabbit finding: with --test-cities a,b the b-city must never
+        # train the a-fold or vice versa; each fold trains on non-test cities
+        # only. (The default LOSO path - every city tested - is unchanged:
+        # each fold trains on all other cities as before.)
+        rep = transfer_report(
+            {"alpha": _city(seed=3), "beta": _city(seed=4),
+             "gamma": _city(seed=5)},
+            GROUPS, test_cities=["alpha", "beta"], seed=1)
+        assert rep["folds"]["alpha"]["train_cities"] == ["gamma"]
+        assert rep["folds"]["beta"]["train_cities"] == ["gamma"]
+
+    def test_single_test_city_fold_pool_unchanged_by_exclusion_rule(self):
+        # the published single-test-city case study contract: all non-tested
+        # cities are the training pool (zero behavior change coming from the
+        # multi-test-city fix)
+        panels = {"alpha": _city(seed=3), "beta": _city(seed=4)}
+        rep = transfer_report(panels, GROUPS, test_cities=["beta"], seed=1)
+        assert rep["folds"]["beta"]["train_cities"] == ["alpha"]
+
     def test_degenerate_fold_pool_reported_before_fitting(self):
         # the synthetic cells span ~55 km, so a 200 km block tiles the
         # one-city pool into a single degenerate block: the pre-flight must

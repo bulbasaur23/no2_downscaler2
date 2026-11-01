@@ -101,6 +101,21 @@ class TestValidation:
         # ~0.04 deg2 at lat 28: 0.04 * 111320^2 * cos(28) ^-? just bounded
         assert 3e8 < info["area_m2"] < 6e8
 
+    def test_area_m2_is_meter_accurate_with_single_cos(self):
+        # CodeRabbit finding: _shoelace_scaled already scales lon by cos(lat),
+        # so converting to m2 needs m_lat^2 only - multiplying by coslat again
+        # understated area by cos(lat) (~12% at Delhi's latitude) and mis-fired
+        # both the sub-cell warning and the area cap.
+        import math
+        from no2map.polygon import M_PER_DEG_LAT
+        dlat = 0.2
+        poly = self.base_square(dlat=dlat)
+        mid_lat = 28.0 + dlat / 2.0
+        expected = (0.2 * math.cos(math.radians(mid_lat)) * dlat
+                    * M_PER_DEG_LAT ** 2)
+        info = validate_polygon(poly)
+        assert info["area_m2"] == pytest.approx(expected, rel=1e-9)
+
     def test_sub_cell_polygon_warns(self):
         tiny = [(77.01, 28.01), (77.02, 28.01), (77.02, 28.02), (77.01, 28.02)]
         info = validate_polygon(tiny)
